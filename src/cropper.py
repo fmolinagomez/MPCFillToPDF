@@ -5,7 +5,7 @@ from PIL import Image, ImageOps
 _BLEED_X = 0.042
 _BLEED_Y = 0.031
 
-# Card trim dimensions in mm (Copistería Soriano / MPC standard)
+# Card trim dimensions in mm (MPC standard)
 CARD_W_MM = 63.5
 CARD_H_MM = 88.9
 
@@ -42,14 +42,21 @@ def _add_mirror_bleed(img: Image.Image, bx: int, by: int) -> Image.Image:
 
 
 def process_for_pdf(input_path: str | Path, output_path: str | Path) -> Path:
-    """Crop MPC bleed, then add mirror bleed. Result is what gets placed in the PDF."""
+    """Crop MPC bleed, then add mirror bleed. Result is what gets placed in the PDF.
+
+    Skips work when `output_path` already exists and is newer than `input_path`,
+    matching the downloader's cache-on-disk behavior.
+    """
+    output_path = Path(output_path)
+    input_path = Path(input_path)
+    if output_path.exists() and output_path.stat().st_mtime >= input_path.stat().st_mtime:
+        return output_path
     img = Image.open(input_path).convert("RGB")
     trimmed = _crop_to_trim(img)
     cw, ch = trimmed.size
     bx = round(cw * BLEED_MM / CARD_W_MM)
     by = round(ch * BLEED_MM / CARD_H_MM)
     bled = _add_mirror_bleed(trimmed, bx, by)
-    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bled.save(output_path)
     return output_path

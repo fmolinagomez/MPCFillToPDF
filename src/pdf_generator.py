@@ -26,8 +26,17 @@ CARDS_PER_PAGE = COLS * ROWS
 MARGIN_X = 5.75 * mm
 MARGIN_Y = 11.15 * mm
 
-# Crop mark style
-MARK_W = 0.5
+# Crop mark style — ticks in the page margins
+MARK_W = 1.0
+MARK_GAP = 3.0  # pt between trim line and tick endpoint
+
+# Printer-mark assets
+ASSETS_DIR = Path(__file__).parent / "assets"
+CORNER_MARK_PATH = ASSETS_DIR / "corner_mark.png"
+CORNER_MARK_PT = 10.0                 # 10×10pt registration crosshair at each page corner
+COLOR_BAR_PATH = ASSETS_DIR / "color_bar.png"
+COLOR_BAR_W, COLOR_BAR_H = 200.0, 15.0    # top-center CMYK calibration bar
+COLOR_BAR_X = 197.64
 
 PAGE_W, PAGE_H = A4
 
@@ -44,38 +53,47 @@ def _trim_origin(col: int, row: int) -> tuple[float, float]:
     return x, y
 
 
-def _white_bands(trim_edges: list[float], page_extent: float) -> list[tuple[float, float]]:
-    """Given sorted trim edges along one axis, return the white-space intervals
-    where a perpendicular cut line should be visible (page margins + gaps)."""
-    edges = sorted(trim_edges)
-    bands = [(0.0, edges[0])]
-    for i in range(1, len(edges) - 1, 2):
-        bands.append((edges[i], edges[i + 1]))
-    bands.append((edges[-1], page_extent))
-    return bands
-
-
 def _draw_crop_marks(c: canvas.Canvas) -> None:
-    """Cut lines that span the white margins and the gaps between cards,
-    forming a continuous trim grid (matches examples/example_2.pdf style)."""
+    """Trim-edge ticks in the page margins only (no lines crossing inner gaps)."""
     xs = [MARGIN_X + col * (CARD_W + GAP_X) + dx
           for col in range(COLS) for dx in (0.0, CARD_W)]
     ys = [PAGE_H - MARGIN_Y - (row + 1) * CARD_H - row * GAP_Y + dy
           for row in range(ROWS) for dy in (0.0, CARD_H)]
 
-    y_bands = _white_bands(ys, PAGE_H)
-    x_bands = _white_bands(xs, PAGE_W)
-
     c.saveState()
     c.setLineWidth(MARK_W)
     c.setStrokeColorRGB(0, 0, 0)
+    # Vertical ticks at each column trim X, in the top and bottom margins only
+    top_y_end = PAGE_H - MARGIN_Y + MARK_GAP
+    bot_y_end = MARGIN_Y - MARK_GAP
     for x in xs:
-        for y1, y2 in y_bands:
-            c.line(x, y1, x, y2)
+        c.line(x, 0, x, bot_y_end)
+        c.line(x, top_y_end, x, PAGE_H)
+    # Horizontal ticks at each row trim Y, in the left and right margins only
+    left_x_end = MARGIN_X - MARK_GAP
+    right_x_end = PAGE_W - MARGIN_X + MARK_GAP
     for y in ys:
-        for x1, x2 in x_bands:
-            c.line(x1, y, x2, y)
+        c.line(0, y, left_x_end, y)
+        c.line(right_x_end, y, PAGE_W, y)
     c.restoreState()
+
+
+def _draw_printer_marks(c: canvas.Canvas, page_label: str | None = None) -> None:
+    """Page-corner registration crosshairs plus the CMYK calibration bar
+    and (optional) page-pair label (e.g. "1", "1B")."""
+    if CORNER_MARK_PATH.exists():
+        s = CORNER_MARK_PT
+        for x, y in [(0, 0), (PAGE_W - s, 0), (0, PAGE_H - s), (PAGE_W - s, PAGE_H - s)]:
+            c.drawImage(str(CORNER_MARK_PATH), x, y, width=s, height=s, mask='auto')
+    if COLOR_BAR_PATH.exists():
+        c.drawImage(str(COLOR_BAR_PATH), COLOR_BAR_X, PAGE_H - COLOR_BAR_H,
+                    width=COLOR_BAR_W, height=COLOR_BAR_H, mask='auto')
+    if page_label:
+        c.saveState()
+        c.setFont("Helvetica", 8)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(295.4, 15.3, page_label)
+        c.restoreState()
 
 
 def _draw_page(
@@ -83,8 +101,10 @@ def _draw_page(
     slots: list[int | None],
     id_to_path: dict[str, Path],
     slot_to_id: dict[int, str],
+    page_label: str | None = None,
 ) -> None:
     _draw_crop_marks(c)
+    _draw_printer_marks(c, page_label)
 
     for idx, slot in enumerate(slots):
         col, row = idx % COLS, idx // COLS
@@ -169,21 +189,23 @@ def generate(
     outputs: list[Path] = []
     total_pairs = sum(len(c) for c in chunks)
     done_pairs = 0
+    pair_no = 0
     for idx, chunk in enumerate(chunks, start=1):
         suffix = f"_{idx}" if multiple else ""
-        path = output_dir / f"{base_name}{suffix}.pdf"
+        path = output_dir / f"out_{base_name}{suffix}.pdf"
         c = canvas.Canvas(str(path), pagesize=A4)
         for page_slots in chunk:
+            pair_no += 1
             padded = page_slots + [None] * (CARDS_PER_PAGE - len(page_slots))
 
-            _draw_page(c, padded, id_to_path, front_slot_to_id)
+            _draw_page(c, padded, id_to_path, front_slot_to_id, page_label=str(pair_no))
             c.showPage()
 
             mirrored = []
             for row in range(ROWS):
                 mirrored.extend(reversed(padded[row * COLS:(row + 1) * COLS]))
 
-            _draw_page(c, mirrored, id_to_path, back_slot_to_id)
+            _draw_page(c, mirrored, id_to_path, back_slot_to_id, page_label=f"{pair_no}B")
             c.showPage()
 
             done_pairs += 1

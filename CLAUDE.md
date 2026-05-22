@@ -89,7 +89,7 @@ MPCFillToPDF/
 ### PDF layout (matches examples/example.pdf exactly)
 - Paper: A4 portrait (210mm × 297mm)
 - Grid: 3 columns × 3 rows = 9 cards per page
-- Card trim size: 63.5mm × 88.9mm (PNP Tool / Copistería Soriano profile)
+- Card trim size: 63.5mm × 88.9mm (MPC standard)
 - Bleed: 1mm kept around each trim (image size is 65.5 × 90.9mm)
 - Margin page-edge → trim: 5.75mm horizontal, 11.15mm vertical
 - Gap between trims: 4mm horizontal and vertical (= 2mm visible white between images)

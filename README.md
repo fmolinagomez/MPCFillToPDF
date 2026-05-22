@@ -76,7 +76,7 @@ En modo `--test` la caché de Google Drive y los recortes se mantienen. La sigui
 ## Formato del PDF generado
 
 - A4 vertical, 3 columnas × 3 filas = 9 cartas por página.
-- Carta: 63,5 × 88,9 mm (tamaño estándar MPC / Copistería Soriano).
+- Carta: 63,5 × 88,9 mm (tamaño estándar MPC).
 - Sangrado en espejo de 1 mm alrededor de cada carta.
 - Página 1: frentes en orden de slot (0–8, izquierda → derecha, arriba → abajo).
 - Página 2: dorsos espejados horizontalmente para que el doble cara case.

@@ -12,6 +12,7 @@ output/
 out/*
 !out/.gitkeep
 *.pdf
+xml/*
 
 # Image / PDF workspace (cached downloads, crops, intermediate artifacts)
 workdir/
