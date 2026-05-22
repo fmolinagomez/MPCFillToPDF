@@ -117,8 +117,25 @@ def _draw_page(
                             width=IMAGE_W, height=IMAGE_H)
 
 
-# Maximum PDF size before splitting into multiple chunks (bytes).
-MAX_PDF_BYTES = 500 * 1024 * 1024
+# Cap each generated PDF at 500 MB on disk (decimal MB, as reported by file
+# managers). We aim for 480 MB so the final file stays comfortably under
+# 500 MB even when the per-image projection is a few percent off.
+MAX_PDF_BYTES = 480 * 1000 * 1000
+
+# Projection factors from on-disk image size to its contribution to the
+# final PDF. reportlab keeps JPEG sources as /DCTDecode (≈1× plus a 25%
+# ASCII85 overhead), but decodes PNG sources and re-encodes them with
+# Flate+ASCII85 — for photographic card art the resulting stream is
+# roughly 2× the original PNG.
+_PDF_GROWTH = {".jpg": 1.30, ".jpeg": 1.30, ".png": 2.00}
+_PDF_GROWTH_DEFAULT = 2.00
+
+
+def _projected_pdf_bytes(path: Path | None) -> int:
+    if not path or not path.exists():
+        return 0
+    factor = _PDF_GROWTH.get(path.suffix.lower(), _PDF_GROWTH_DEFAULT)
+    return int(path.stat().st_size * factor)
 
 
 def _pair_drive_ids(
@@ -160,8 +177,7 @@ def generate(
              for i in range(0, len(ordered_slots), CARDS_PER_PAGE)]
 
     def id_bytes(drive_id: str) -> int:
-        p = id_to_path.get(drive_id)
-        return p.stat().st_size if p and p.exists() else 0
+        return _projected_pdf_bytes(id_to_path.get(drive_id))
 
     chunks: list[list[list[int]]] = []
     current: list[list[int]] = []

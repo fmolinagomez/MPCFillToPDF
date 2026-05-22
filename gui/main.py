@@ -4,6 +4,7 @@ import queue
 import threading
 import tkinter as tk
 import traceback
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -145,6 +146,8 @@ class App:
     def _work(self, plan_, reports) -> None:
         out = output_dir()
         wd = work_dir()
+        run_dir = out / datetime.now().strftime("%d_%m_%Y_%H-%M-%S")
+        run_dir.mkdir(parents=True, exist_ok=True)
         generated: list[Path] = []
         try:
             jobs = plan_.jobs
@@ -154,14 +157,14 @@ class App:
                 def cb(stage, done, total, _label=label):
                     self.events.put(("progress", stage, done, total, _label))
                 if job.is_merged:
-                    pdfs = run_merged(job.xml_paths, out, job.base_name, wd, cb)
+                    pdfs = run_merged(job.xml_paths, run_dir, job.base_name, wd, cb)
                 else:
-                    pdfs = run(job.xml_paths[0], out, wd, cb)
+                    pdfs = run(job.xml_paths[0], run_dir, wd, cb)
                 generated.extend(pdfs)
-            manifest = write_manifest(plan_, reports, out)
+            manifest = write_manifest(plan_, reports, run_dir)
             if not self.keep_cache.get():
                 self._cleanup_workdir(wd)
-            self.events.put(("done", generated, manifest))
+            self.events.put(("done", generated, manifest, run_dir))
         except Exception as e:
             self.events.put(("error", f"{e}\n\n{traceback.format_exc()}"))
 
@@ -195,26 +198,25 @@ class App:
             self.progress["value"] = pct
             self.status_var.set(f"{name} — {label}: {done}/{total}")
         elif kind == "done":
-            _, pdfs, manifest = ev
+            _, pdfs, manifest, run_dir = ev
             self.progress["value"] = 100
-            extra = f" Manifest en {manifest.name}." if manifest else ""
-            self.status_var.set(f"Listo. {len(pdfs)} PDF(s) generados.{extra}")
+            extra = f" Resumen en {manifest.name}." if manifest else ""
+            self.status_var.set(f"Listo. {len(pdfs)} PDF(s) generados en {run_dir.name}.{extra}")
             self._refresh_generate_state()
-            self._open_output_folder()
+            self._open_output_folder(run_dir)
         elif kind == "error":
             _, msg = ev
             self.status_var.set("Error durante la generación.")
             self._refresh_generate_state()
             messagebox.showerror(APP_TITLE, msg)
 
-    def _open_output_folder(self) -> None:
-        path = str(output_dir())
+    def _open_output_folder(self, path: Path) -> None:
         try:
-            os.startfile(path)  # Windows
+            os.startfile(str(path))  # Windows
         except AttributeError:
             import subprocess
             opener = "open" if os.uname().sysname == "Darwin" else "xdg-open"
-            subprocess.Popen([opener, path])
+            subprocess.Popen([opener, str(path)])
 
 
 def main() -> None:

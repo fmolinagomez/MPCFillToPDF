@@ -84,9 +84,9 @@ MPCFillToPDF/
 - Output: `dist/MPCFillToPDF.exe`. The .exe is portable — drop it anywhere and it creates `out/` and `workdir/` next to itself on first run.
 
 ### Size-based splitting
-- Threshold: 500 MB per PDF (`MAX_PDF_BYTES` in `pdf_generator.py`).
+- Cap: each output PDF stays under 500 MB on disk (decimal MB). `MAX_PDF_BYTES` in `pdf_generator.py` is set to 480 MB so the projected estimate has a safety margin.
 - The cut is taken after the next even page (back), so each chunk remains independently duplex-ready.
-- Per-pair size is estimated from the cropped image file sizes — reportlab embeds JPEGs verbatim, so this is a faithful proxy for the resulting PDF growth.
+- Per-pair size is projected from the cropped image file sizes with per-extension multipliers: JPEG ×1.30 (kept as `/DCTDecode` with ~25% ASCII85 overhead), PNG ×2.00 (reportlab decodes PNGs and re-encodes with Flate+ASCII85, roughly doubling photographic card art). When a pair's projected new bytes would push the chunk past the cap, a new chunk starts — even if that leaves the next chunk with a single page-pair (2 pages).
 
 ## Key implementation notes
 

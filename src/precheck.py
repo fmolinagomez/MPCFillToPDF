@@ -128,9 +128,9 @@ def write_manifest(
     reports: list[XmlReport],
     output_dir: Path,
 ) -> Path | None:
-    """Write `fusiones.txt` when the plan contains a merge; otherwise remove any
-    stale `fusiones.txt` left over from a previous run that did have merges."""
-    out = output_dir / "fusiones.txt"
+    """Write `resumen.txt` when the plan contains a merge; otherwise remove any
+    stale `resumen.txt` left over from a previous run that did have merges."""
+    out = output_dir / "resumen.txt"
     if not plan_.has_merge:
         if out.exists():
             out.unlink()

@@ -57,9 +57,9 @@ Hay dos formas: por línea de comandos (CLI) o con la interfaz gráfica (GUI).
    ```
    python -m cli.main
    ```
-3. Los PDFs aparecen en `out/`, nombrados como el XML de origen:
-   - `xml/mazo.xml` → `out/out_mazo.pdf`
-   - Si un PDF supera 500 MB se parte en `out/out_mazo_1.pdf`, `out/out_mazo_2.pdf`, … (el corte siempre cae tras una página de reversos para que cada parte siga siendo imprimible a doble cara).
+3. Los PDFs aparecen en una carpeta nueva por ejecución dentro de `out/`, con el nombre `DD_MM_YYYY_HH-MM-SS`. Cada PDF se nombra como el XML de origen:
+   - `xml/mazo.xml` → `out/22_05_2026_14-30-12/out_mazo.pdf`
+   - Si un PDF supera 500 MB se parte en `out_mazo_1.pdf`, `out_mazo_2.pdf`, … (el corte siempre cae tras una página de reversos para que cada parte siga siendo imprimible a doble cara).
 
 #### Opciones de la CLI
 
@@ -83,6 +83,7 @@ python -m cli.main -y                   # sin prompts
 
 ```
 Encontrados 2 XML(s) en 'xml'.
+Carpeta de salida: out\22_05_2026_14-30-12
   - mazo_a.xml: 95 cartas  (4 hueco(s) en blanco)
   - mazo_b.xml: 4 cartas  (5 hueco(s) en blanco)
 
@@ -93,9 +94,9 @@ Procesando: mazo_a_mazo_b_union (fusión)
 Descargando: [##############################] 89/89  ( 12.4s)
 Recortando : [##############################] 89/89  (  6.1s)
 Generando  : [##############################] 11/11  ( 88.2s)
-  -> out\out_mazo_a_mazo_b_union.pdf  (493.2 MB)
+  -> out\22_05_2026_14-30-12\out_mazo_a_mazo_b_union.pdf  (417.5 MB)
 
-Detalle de fusiones escrito en: out\fusiones.txt
+Resumen de fusiones escrito en: out\22_05_2026_14-30-12\resumen.txt
 Tiempo total: 106.7s
 ```
 
@@ -140,7 +141,7 @@ El sistema lo gestiona así:
 1. **Cuenta las cartas** de cada XML antes de empezar.
 2. **Si la suma de los XMLs *no múltiplos de 9*** sí es múltiplo de 9 → los fusiona en un único PDF llamado `<a>_<b>_..._union.pdf`. Cada carta conserva su reverso original.
 3. **Si la suma sigue sin ser múltiplo de 9** → avisa de los huecos y pide confirmación.
-4. Cuando hay fusiones, escribe **`out/fusiones.txt`** con el desglose:
+4. Cuando hay fusiones, escribe **`resumen.txt`** dentro de la carpeta de la ejecución con el desglose:
    ```
    PDF: mazo_a_mazo_b_union.pdf  (99 cartas)
      - 95 carta(s) de mazo_a.xml
@@ -154,7 +155,7 @@ El sistema lo gestiona así:
 ```
 MPCFillToPDF/
 ├── xml/                  ← .xml de MPCFill (modo CLI)
-├── out/                  ← PDFs generados (+ fusiones.txt si hay fusión)
+├── out/                  ← una subcarpeta por ejecución (DD_MM_YYYY_HH-MM-SS) con los PDFs y, si hay fusión, resumen.txt
 ├── workdir/              ← caché temporal: raw/ (descargas) y bled/ (recortes)
 ├── cli/main.py           ← entrada CLI
 ├── gui/

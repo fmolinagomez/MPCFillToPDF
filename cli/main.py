@@ -2,6 +2,7 @@ import argparse
 import shutil
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # Windows consoles default to cp1252 which can't encode characters like ← or •.
@@ -82,7 +83,11 @@ def main() -> None:
         print(f"No hay archivos .xml en '{xml_dir}'.")
         return
 
+    run_dir = out_dir / datetime.now().strftime("%d_%m_%Y_%H-%M-%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"Encontrados {len(xmls)} XML(s) en '{xml_dir}'.")
+    print(f"Carpeta de salida: {run_dir}")
 
     reports = analyze(xmls)
     for r in reports:
@@ -113,16 +118,16 @@ def main() -> None:
         print(f"\nProcesando: {label}")
         _stage_started_at.clear()
         if job.is_merged:
-            pdfs = run_merged(job.xml_paths, out_dir, job.base_name, workdir, _progress)
+            pdfs = run_merged(job.xml_paths, run_dir, job.base_name, workdir, _progress)
         else:
-            pdfs = run(job.xml_paths[0], out_dir, workdir, _progress)
+            pdfs = run(job.xml_paths[0], run_dir, workdir, _progress)
         for p in pdfs:
             size_mb = p.stat().st_size / (1024 * 1024)
             print(f"  -> {p}  ({size_mb:.1f} MB)")
 
-    manifest = write_manifest(plan_, reports, out_dir)
+    manifest = write_manifest(plan_, reports, run_dir)
     if manifest:
-        print(f"\nDetalle de fusiones escrito en: {manifest}")
+        print(f"\nResumen de fusiones escrito en: {manifest}")
 
     total_elapsed = time.time() - overall_start
     print(f"\nTiempo total: {total_elapsed:.1f}s")
