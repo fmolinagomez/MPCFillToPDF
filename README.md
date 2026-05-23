@@ -1,3 +1,10 @@
+# Tutorial
+Si buscas un tutorial mira aquí -> https://github.com/Diphendara/MPCFillToPDF/wiki/Tutorial
+
+# Sugerencias, bugs etc
+Puedes buscarme en twitter/bsky como @diphendara o abrirme una issue por github
+
+
 # MPCFillToPDF
 
 Convierte un archivo de proyecto de [MPCFill](https://mpcfill.com/) (XML) en un PDF listo para imprimir en una imprenta local (A4, 3×3 cartas por página, doble cara).
