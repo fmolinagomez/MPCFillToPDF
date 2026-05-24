@@ -40,8 +40,8 @@ class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(APP_TITLE)
-        root.geometry("960x760")
-        root.minsize(820, 660)
+        root.geometry("1200x760")
+        root.minsize(1000, 660)
 
         self.xml_paths: list[Path] = []
         self.local_fronts: list[Path] = []
@@ -69,42 +69,49 @@ class App:
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
+        # Contenedor principal que ocupa toda la ventana
         frm = ttk.Frame(self.root)
         frm.pack(fill=tk.BOTH, expand=True, **pad)
 
-        # Two-pane horizontal split: XMLs on the left, local images on the right.
+        # 1. SECCIÓN INFERIOR (Controles y Progreso)
+        # La empaquetamos primero con side=tk.BOTTOM para que "reserve" su espacio
+        bottom_controls = ttk.Frame(frm)
+        bottom_controls.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+
+        self.keep_cache_cb = ttk.Checkbutton(
+            bottom_controls, text="Conservar caché de imágenes entre ejecuciones",
+            variable=self.keep_cache,
+        )
+        self.keep_cache_cb.pack(anchor=tk.W)
+
+        ttk.Separator(bottom_controls, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
+
+        self.generate_btn = ttk.Button(bottom_controls, text="Generar PDF(s)", command=self._start)
+        self.generate_btn.pack(fill=tk.X)
+        self.generate_btn.state(["disabled"])
+
+        self.stop_btn = ttk.Button(bottom_controls, text="Detener", command=self._request_stop)
+
+        self.status_var = tk.StringVar(value="Listo. Selecciona uno o más XML o imágenes locales.")
+        ttk.Label(bottom_controls, textvariable=self.status_var, anchor=tk.W).pack(fill=tk.X, pady=(10, 2))
+
+        self.progress = ttk.Progressbar(bottom_controls, mode="determinate", maximum=100)
+        self.progress.pack(fill=tk.X)
+
+        out_text = f"Carpeta de salida: {output_dir()}"
+        self.out_label = ttk.Label(bottom_controls, text=out_text, foreground="#666", anchor=tk.W)
+        self.out_label.pack(fill=tk.X, pady=(8, 0))
+
+        # 2. SECCIÓN SUPERIOR (Paneles de archivos)
+        # Usamos un frame intermedio que ocupará el RESTO del espacio
         top = ttk.Frame(frm)
-        top.pack(fill=tk.BOTH, expand=True)
+        top.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         top.columnconfigure(0, weight=1, uniform="cols")
         top.columnconfigure(1, weight=1, uniform="cols")
         top.rowconfigure(0, weight=1)
 
         self._build_xml_pane(top)
         self._build_locals_pane(top)
-
-        # --- Options & run ------------------------------------------------
-        self.keep_cache_cb = ttk.Checkbutton(
-            frm, text="Conservar caché de imágenes entre ejecuciones",
-            variable=self.keep_cache,
-        )
-        self.keep_cache_cb.pack(anchor=tk.W, pady=(8, 0))
-
-        ttk.Separator(frm, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
-
-        self.generate_btn = ttk.Button(frm, text="Generar PDF(s)", command=self._start)
-        self.generate_btn.pack(fill=tk.X)
-        self.generate_btn.state(["disabled"])
-
-        self.stop_btn = ttk.Button(frm, text="Detener", command=self._request_stop)
-
-        self.status_var = tk.StringVar(value="Listo. Selecciona uno o más XML o imágenes locales.")
-        ttk.Label(frm, textvariable=self.status_var, anchor=tk.W).pack(fill=tk.X, pady=(10, 2))
-
-        self.progress = ttk.Progressbar(frm, mode="determinate", maximum=100)
-        self.progress.pack(fill=tk.X)
-
-        out_text = f"Carpeta de salida: {output_dir()}"
-        ttk.Label(frm, text=out_text, foreground="#666", anchor=tk.W).pack(fill=tk.X, pady=(8, 0))
 
     def _build_xml_pane(self, parent: ttk.Frame) -> None:
         xml_frame = ttk.LabelFrame(parent, text="Archivos XML")
@@ -340,7 +347,7 @@ class App:
 
             crop_var = tk.BooleanVar(value=self.local_back_crop[i])
             ttk.Checkbutton(
-                row, text="Recortar bordes", variable=crop_var,
+                row, text="Recortar bordes extra", variable=crop_var,
                 command=lambda idx=i, v=crop_var: self._on_back_crop_change(idx, v),
             ).pack(side=tk.LEFT, padx=(4, 6))
 
@@ -460,7 +467,7 @@ class App:
 
             crop_var = tk.BooleanVar(value=self.local_front_crop[i])
             ttk.Checkbutton(
-                row, text="Recortar bordes", variable=crop_var,
+                row, text="Recortar bordes extra", variable=crop_var,
                 command=lambda idx=i, v=crop_var: self._on_front_crop_change(idx, v),
             ).pack(side=tk.LEFT, padx=(4, 6))
 
