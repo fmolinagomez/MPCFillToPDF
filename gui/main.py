@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from gui.paths import output_dir, work_dir
 from src.cancellation import Cancelled
+from src.downloader import DownloadPermissionError, DownloadTimeoutError
 from src.pipeline import run, run_merged, run_locals_only
 from src.precheck import analyze, plan, format_warning, format_merge_info, write_manifest
 
@@ -668,13 +669,10 @@ class App:
             if not self.keep_cache.get():
                 self._cleanup_workdir(wd)
             self.events.put(("done", generated, manifest, run_dir))
-<<<<<<< Updated upstream
-=======
         except DownloadPermissionError as e:
             self.events.put(("permission_error", e.card_name, e.xml_name, e.position, run_dir, wd))
         except DownloadTimeoutError as e:
             self.events.put(("timeout_error", e.card_name, e.xml_name, e.position, run_dir, wd))
->>>>>>> Stashed changes
         except Cancelled:
             self.events.put(("cancelled", run_dir, wd))
         except Exception as e:
@@ -728,8 +726,6 @@ class App:
             self.progress["value"] = 0
             self.status_var.set("Proceso detenido.")
             self._finish_running()
-<<<<<<< Updated upstream
-=======
         elif kind == "permission_error":
             _, card_name, xml_name, position, run_dir, wd = ev
             if run_dir is not None:
@@ -772,7 +768,6 @@ class App:
             self.status_var.set("Error de descarga (tiempo agotado).")
             self._finish_running()
             messagebox.showerror(APP_TITLE, "\n\n".join(parts))
->>>>>>> Stashed changes
         elif kind == "error":
             _, msg, run_dir, wd = ev
             if run_dir is not None:
