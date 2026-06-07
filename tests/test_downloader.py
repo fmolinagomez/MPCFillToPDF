@@ -202,8 +202,14 @@ def test_download_all_propagates_timeout_error(tmp_path):
 
 
 def test_download_all_cancels_pending_futures_on_error(tmp_path):
-    """When one download fails, pending (not-yet-started) futures are cancelled,
-    so the total number of gdown calls is capped near the thread-pool size."""
+    """When one download fails, pending (not-yet-started) futures are cancelled.
+
+    Non-failing tasks sleep 50 ms so they remain in-flight when ID00 fails
+    instantly. This guarantees as_completed returns ID00 first. However, the
+    ThreadPoolExecutor may assign one extra task to the freed thread before
+    cancel fires, so the bound is THREADS + 1, not THREADS.
+    """
+    import time
     from src.downloader import THREADS
 
     started = []
@@ -212,15 +218,16 @@ def test_download_all_cancels_pending_futures_on_error(tmp_path):
         started.append(url)
         if "ID00" in url:
             raise requests.exceptions.Timeout("timeout")
-        _fake_gdown(url, path, quiet)
+        time.sleep(0.5)  # stay in-flight until cancel fires; 500 ms outlasts CI GIL delays
+        Path(path).write_bytes(b"img")
 
-    n_tasks = 30  # well above THREADS so many tasks would be pending
+    n_tasks = 30
     pairs = [(f"ID{i:02d}", f"card{i}.jpg") for i in range(n_tasks)]
 
     with patch("gdown.download", side_effect=_fail_first):
         with pytest.raises(DownloadTimeoutError):
             download_all(pairs, tmp_path / "raw")
 
-    # Without cancel, all 30 would eventually run; with cancel, at most
-    # THREADS more can complete after the failing one was submitted.
-    assert len(started) <= THREADS + 2
+    # ID00 fails → cancel fires → ID(THREADS+1)..29 never start.
+    # The freed thread may pick up one extra task before cancel fires.
+    assert len(started) <= THREADS + 1
