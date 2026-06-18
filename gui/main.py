@@ -31,6 +31,7 @@ from src.downloader import (
     DownloadRateLimitError,
     DownloadTimeoutError,
 )
+from src.op_scraper import OPDeck, scrape_deck, download_images as op_download, get_op_backs, expand_deck as op_expand
 from src.parser import parse, CardOrder
 from src.pipeline import run, run_merged, run_locals_only, run_plan
 from src.precheck import (
@@ -77,6 +78,22 @@ def _ellipsize(name: str, width: int) -> str:
     if len(name) <= width:
         return name
     return name[: max(0, width - 1)] + "…"
+
+
+def _load_tab_icon(name: str, size: tuple[int, int] = (20, 20)) -> ImageTk.PhotoImage | None:
+    if getattr(sys, "frozen", False):
+        icons_dir = Path(getattr(sys, "_MEIPASS", "")) / "icons"
+    else:
+        icons_dir = Path(__file__).resolve().parent.parent / "icons"
+    path = icons_dir / f"{name}.png"
+    if not path.exists():
+        return None
+    try:
+        img = Image.open(path).convert("RGBA")
+        img = img.resize(size, Image.LANCZOS)
+        return ImageTk.PhotoImage(img)
+    except Exception:
+        return None
 
 
 _PB_DOWNLOAD_COLOR = "#0078d4"  # Windows blue
@@ -371,6 +388,10 @@ class App:
         self._dl_speed_str: str = ""
         self._custom_output_dir: Path | None = None
 
+        # One Piece state
+        self._op_decks: list[OPDeck] = []
+        self._op_deck_rows: list[dict] = []
+
         self._build_ui()
         self.root.after(80, self._drain_events)
         self.root.after(200, self._setup_dnd)
@@ -453,13 +474,35 @@ class App:
         self._build_locals_pane(top)
 
     def _build_xml_pane(self, parent: ttk.Frame) -> None:
-        xml_frame = ttk.LabelFrame(parent, text="Archivos XML")
-        xml_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        self._xml_drop_frame = xml_frame
-        xml_frame.columnconfigure(0, weight=1)
-        xml_frame.rowconfigure(0, weight=1)
+        notebook = ttk.Notebook(parent)
+        notebook.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self._game_notebook = notebook
 
-        xml_list_frame = ttk.Frame(xml_frame)
+        self._mtg_icon_img = _load_tab_icon("mtg_icon")
+        self._op_icon_img = _load_tab_icon("op_icon")
+
+        magic_frame = ttk.Frame(notebook)
+        magic_kw: dict = {"text": " Magic"}
+        if self._mtg_icon_img:
+            magic_kw["image"] = self._mtg_icon_img
+            magic_kw["compound"] = "left"
+        notebook.add(magic_frame, **magic_kw)
+        self._build_magic_tab(magic_frame)
+
+        op_frame = ttk.Frame(notebook)
+        op_kw: dict = {"text": " One Piece"}
+        if self._op_icon_img:
+            op_kw["image"] = self._op_icon_img
+            op_kw["compound"] = "left"
+        notebook.add(op_frame, **op_kw)
+        self._build_onepiece_tab(op_frame)
+
+    def _build_magic_tab(self, parent: ttk.Frame) -> None:
+        self._xml_drop_frame = parent
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        xml_list_frame = ttk.Frame(parent)
         xml_list_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=(6, 2))
         xml_list_frame.columnconfigure(0, weight=1)
         xml_list_frame.rowconfigure(0, weight=1)
@@ -480,12 +523,56 @@ class App:
         )
         self._xml_empty_label.pack(anchor="w")
 
-        xml_btn_row = ttk.Frame(xml_frame)
+        xml_btn_row = ttk.Frame(parent)
         xml_btn_row.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
         ttk.Button(xml_btn_row, text="Seleccionar XMLs…",
                    command=self._pick_xmls).pack(side=tk.LEFT)
         ttk.Button(xml_btn_row, text="Vaciar",
                    command=self._clear_xmls).pack(side=tk.LEFT, padx=6)
+
+    def _build_onepiece_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        url_row = ttk.Frame(parent)
+        url_row.grid(row=0, column=0, sticky="ew", padx=6, pady=(10, 4))
+        url_row.columnconfigure(1, weight=1)
+        ttk.Label(url_row, text="URL del mazo:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self._op_url_var = tk.StringVar()
+        self._op_url_entry = ttk.Entry(url_row, textvariable=self._op_url_var)
+        self._op_url_entry.grid(row=0, column=1, sticky="ew")
+        self._op_url_entry.bind("<Return>", lambda _e: self._op_load_deck())
+        self._op_load_btn = ttk.Button(url_row, text="Añadir", width=7,
+                                       command=self._op_load_deck)
+        self._op_load_btn.grid(row=0, column=2, padx=(6, 0))
+
+        self._op_status_var = tk.StringVar(value="")
+        ttk.Label(url_row, textvariable=self._op_status_var,
+                  foreground="#555", anchor="w").grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+
+        op_list_frame = ttk.Frame(parent)
+        op_list_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 2))
+        op_list_frame.columnconfigure(0, weight=1)
+        op_list_frame.rowconfigure(0, weight=1)
+
+        self._op_canvas, self._op_inner, _ = self._build_scrollable_rows(op_list_frame)
+        self._op_canvas.bind("<Enter>",
+                             lambda _e: self._bind_mousewheel(self._op_canvas, True))
+        self._op_canvas.bind("<Leave>",
+                             lambda _e: self._bind_mousewheel(self._op_canvas, False))
+
+        self._op_empty_label = ttk.Label(
+            self._op_inner,
+            text="(introduce una URL de mazo y haz clic en «Añadir»)",
+            foreground="#777", padding=(8, 10),
+        )
+        self._op_empty_label.pack(anchor="w")
+
+        op_btn_row = ttk.Frame(parent)
+        op_btn_row.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 6))
+        ttk.Button(op_btn_row, text="Vaciar todo",
+                   command=self._op_clear).pack(side=tk.LEFT)
 
     def _build_locals_pane(self, parent: ttk.Frame) -> None:
         local_frame = ttk.LabelFrame(parent, text="Imágenes locales (opcional)")
@@ -605,6 +692,151 @@ class App:
             lambda e: canvas.itemconfigure(window_id, width=e.width),
         )
         return canvas, inner, window_id
+
+    # ------------------------------------------------------------------
+    # One Piece tab actions
+    # ------------------------------------------------------------------
+    def _op_load_deck(self) -> None:
+        url = self._op_url_var.get().strip()
+        if not url:
+            messagebox.showwarning(APP_TITLE, "Introduce una URL de mazo de One Piece.")
+            return
+
+        self._op_load_btn.state(["disabled"])
+        self._op_status_var.set("Cargando mazo…")
+
+        def _fetch():
+            try:
+                deck = scrape_deck(url)
+                self.events.put(("op_deck_loaded", deck))
+            except Exception as e:
+                self.events.put(("op_deck_error", str(e)))
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _op_refresh_rows(self) -> None:
+        for row in self._op_deck_rows:
+            row["outer"].destroy()
+        self._op_deck_rows.clear()
+
+        if not self._op_decks:
+            self._op_empty_label.pack(anchor="w")
+            return
+        self._op_empty_label.pack_forget()
+
+        for idx, deck in enumerate(self._op_decks):
+            leader = deck.leader
+
+            # Outer container for summary + collapsible detail
+            outer = ttk.Frame(self._op_inner, relief="groove", borderwidth=1)
+            outer.pack(fill=tk.X, pady=3, padx=2)
+            outer.columnconfigure(0, weight=1)
+
+            # ── Summary row ──────────────────────────────────────────
+            summary = ttk.Frame(outer)
+            summary.pack(fill=tk.X, padx=6, pady=4)
+            summary.columnconfigure(1, weight=1)
+
+            # Deck name
+            ttk.Label(summary, text=_ellipsize(deck.name, 22),
+                      font=("Segoe UI", 9, "bold"), anchor="w").grid(
+                row=0, column=0, sticky="w", padx=(0, 12))
+
+            # Leader info
+            if leader:
+                color_txt = " / ".join(leader.colors)
+                leader_txt = f"Líder: {_ellipsize(leader.name, 18)}  ({color_txt})"
+            else:
+                leader_txt = "(sin líder)"
+            ttk.Label(summary, text=leader_txt,
+                      foreground="#555", anchor="w").grid(
+                row=0, column=1, sticky="w")
+
+            # Slots count
+            ttk.Label(summary, text=f"{deck.total_slots} cartas",
+                      foreground="#888", anchor="e").grid(
+                row=0, column=2, sticky="e", padx=(8, 6))
+
+            # Toggle details button
+            expanded_var = tk.BooleanVar(value=False)
+            toggle_btn = ttk.Button(
+                summary, text="Detalles ▼", width=10,
+                command=lambda i=idx: self._op_toggle_details(i),
+            )
+            toggle_btn.grid(row=0, column=3, padx=(0, 4))
+
+            # Remove button
+            ttk.Button(
+                summary, text="✕", width=2,
+                command=lambda i=idx: self._op_remove_deck(i),
+            ).grid(row=0, column=4)
+
+            # ── Collapsible detail frame ──────────────────────────────
+            detail = ttk.Frame(outer)
+            # Not packed initially (collapsed)
+
+            for card in deck.cards:
+                row_f = ttk.Frame(detail)
+                row_f.pack(fill=tk.X, pady=0, padx=(12, 4))
+
+                if card.is_leader:
+                    badge_text, badge_fg = "LÍDER", "#1565C0"
+                    badge_font = ("Segoe UI", 8, "bold")
+                else:
+                    badge_text, badge_fg = f"x{card.quantity}", "#444"
+                    badge_font = ("Segoe UI", 8)
+                ttk.Label(row_f, text=badge_text, foreground=badge_fg,
+                          font=badge_font, width=6, anchor="e").pack(side=tk.LEFT, padx=(0, 6))
+                ttk.Label(row_f, text=_ellipsize(card.name, 24),
+                          anchor="w", width=25).pack(side=tk.LEFT)
+                ttk.Label(row_f, text=card.card_id,
+                          foreground="#888", font=("Segoe UI", 8),
+                          anchor="w", width=10).pack(side=tk.LEFT, padx=(4, 0))
+                if card.colors:
+                    ttk.Label(row_f, text=" / ".join(card.colors),
+                              foreground="#555", font=("Segoe UI", 8)).pack(
+                        side=tk.LEFT, padx=(6, 0))
+
+            self._op_deck_rows.append({
+                "outer": outer,
+                "detail": detail,
+                "toggle_btn": toggle_btn,
+                "expanded": expanded_var,
+                "deck": deck,
+            })
+
+        self._op_inner.update_idletasks()
+        self._op_canvas.configure(scrollregion=self._op_canvas.bbox("all"))
+
+    def _op_toggle_details(self, idx: int) -> None:
+        if idx >= len(self._op_deck_rows):
+            return
+        row = self._op_deck_rows[idx]
+        expanded = row["expanded"]
+        if expanded.get():
+            row["detail"].pack_forget()
+            row["toggle_btn"].configure(text="Detalles ▼")
+            expanded.set(False)
+        else:
+            row["detail"].pack(fill=tk.X, padx=0, pady=(0, 4))
+            row["toggle_btn"].configure(text="Detalles ▲")
+            expanded.set(True)
+        self._op_inner.update_idletasks()
+        self._op_canvas.configure(scrollregion=self._op_canvas.bbox("all"))
+
+    def _op_remove_deck(self, idx: int) -> None:
+        if 0 <= idx < len(self._op_decks):
+            del self._op_decks[idx]
+            self._op_refresh_rows()
+            self._refresh_generate_state()
+
+    def _op_clear(self) -> None:
+        self._op_decks.clear()
+        self._op_url_var.set("")
+        self._op_status_var.set("")
+        self._op_load_btn.state(["!disabled"])
+        self._op_refresh_rows()
+        self._refresh_generate_state()
 
     # ------------------------------------------------------------------
     # XML pickers
@@ -1287,7 +1519,8 @@ class App:
         if self.xml_paths:
             ready = True
         elif self.local_fronts and self.local_backs:
-            # locals-only requires at least one back (acts as the cardback)
+            ready = True
+        elif self._op_decks:
             ready = True
         if ready and not self.running:
             self.soriano_btn.state(["!disabled"])
@@ -1324,6 +1557,11 @@ class App:
 
     def _start(self, fronts_only: bool = False) -> None:
         if self.running:
+            return
+
+        # One Piece mode: OP decks loaded and no Magic content
+        if self._op_decks and not self.xml_paths and not self.local_fronts:
+            self._start_op(fronts_only)
             return
 
         if not self.xml_paths and not self.local_fronts:
@@ -1413,6 +1651,139 @@ class App:
             target=self._work, args=(plan_, reports, fronts_only), daemon=True,
         )
         self.worker.start()
+
+    def _start_op(self, fronts_only: bool = False) -> None:
+        self.running = True
+        self.cancel_event.clear()
+        self._dl_speed_str = ""
+        self.timing_var.set("")
+        self.soriano_btn.state(["disabled"])
+        self.fronts_only_btn.state(["disabled"])
+        self.stop_btn.state(["!disabled"])
+        self.stop_btn.pack(fill=tk.X, pady=(4, 0), after=self.fronts_only_btn)
+        self.progress["value"] = 0
+        self.status_var.set("Preparando One Piece…")
+        self.worker = threading.Thread(
+            target=self._work_op, args=(fronts_only,), daemon=True,
+        )
+        self.worker.start()
+
+    def _work_op(self, fronts_only: bool = False) -> None:
+        run_dir = None
+        try:
+            decks = self._op_decks
+            if not decks:
+                raise ValueError("No hay mazos de One Piece cargados.")
+
+            out = self._effective_output_dir()
+            wd = work_dir()
+            run_dir = out / datetime.now().strftime("%d_%m_%Y_%H-%M-%S")
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            _run_start = time.time()
+            label = " + ".join(d.name for d in decks)
+
+            # 1. Download all unique cards across all decks (shared cache)
+            op_raw_dir = wd / "op_raw"
+            # Deduplicate cards by card_id across decks
+            all_unique: dict[str, object] = {}
+            for deck in decks:
+                for card in deck.cards:
+                    if card.card_id not in all_unique:
+                        all_unique[card.card_id] = card
+            total_unique = len(all_unique)
+            self.events.put(("progress", "download", 0, total_unique, label))
+
+            # Build a flat list of unique cards for downloading
+            _all_cards = list(all_unique.values())
+
+            class _FlatDeck:
+                cards = _all_cards
+            image_map: dict[str, Path] = {}
+            done_dl = 0
+
+            def _dl_progress(done, total):
+                nonlocal done_dl
+                done_dl = done
+                self.events.put(("progress", "download", done, total, label))
+
+            image_map = op_download(
+                _FlatDeck(), op_raw_dir,
+                cancel_event=self.cancel_event,
+                progress_cb=_dl_progress,
+            )
+
+            if self.cancel_event.is_set():
+                self.events.put(("cancelled", run_dir))
+                return
+
+            # 2. Resolve backs from resources (or generate fallbacks)
+            standard_back, leader_back_res = get_op_backs()
+
+            leader_backs: dict[str, Path] = {}
+            for deck in decks:
+                leader = deck.leader
+                if leader and leader.card_id not in leader_backs:
+                    leader_backs[leader.card_id] = leader_back_res
+
+            # 3. Expand all decks and concatenate
+            all_fronts: list[Path] = []
+            all_backs: list[Path | None] = []
+            for deck in decks:
+                leader = deck.leader
+                lb = leader_backs.get(leader.card_id) if leader else None
+                fronts, backs = op_expand(deck, image_map, lb, standard_back)
+                all_fronts.extend(fronts)
+                all_backs.extend(backs)
+
+            if not all_fronts:
+                raise ValueError("No se pudieron expandir las cartas.")
+
+            all_back_paths = {standard_back} | set(leader_backs.values())
+            crop_map = {p: False for p in set(all_fronts) | all_back_paths}
+
+            # 4. Run pipeline
+            base_name = "_".join(d.slug for d in decks)[:60]
+            self.events.put(("file", 1, 1, label))
+
+            _phase_first: dict[str, float] = {}
+            _phase_done: dict[str, float] = {}
+
+            def cb(stage, done, total):
+                now = time.time()
+                if stage not in _phase_first:
+                    _phase_first[stage] = now
+                if done == total and total > 0:
+                    _phase_done[stage] = now
+                self.events.put(("progress", stage, done, total, label))
+
+            pdfs = run_locals_only(
+                all_fronts, standard_back,
+                run_dir, base_name, wd, cb,
+                cancel_event=self.cancel_event,
+                extra_backs=all_backs,
+                local_crop_map=crop_map,
+                fronts_only=fronts_only,
+            )
+
+            def _fmt_dur(sec: float) -> str:
+                return f"{int(sec) // 60}m {int(sec) % 60}s" if sec >= 60 else f"{sec:.0f}s"
+
+            timing_parts = []
+            for stage in ("download", "crop", "pdf"):
+                if stage in _phase_first and stage in _phase_done:
+                    dur = _phase_done[stage] - _phase_first[stage]
+                    lbl = {"download": "Descarga", "crop": "Recorte", "pdf": "PDF"}.get(stage, stage)
+                    timing_parts.append(f"{lbl}: {_fmt_dur(dur)}")
+            total_dur = time.time() - _run_start
+            timing_str = "  ".join(timing_parts)
+            if timing_str:
+                timing_str += f"  Total: {_fmt_dur(total_dur)}"
+
+            self.events.put(("done", pdfs, None, run_dir, timing_str))
+
+        except Exception as e:
+            self.events.put(("error", f"{e}\n\n{traceback.format_exc()}", run_dir))
 
     def _request_stop(self) -> None:
         if not self.running:
@@ -1737,6 +2108,20 @@ class App:
             self.status_var.set("Error de descarga (tiempo agotado).")
             self._finish_running()
             messagebox.showerror(APP_TITLE, "\n\n".join(parts))
+        elif kind == "op_deck_loaded":
+            _, deck = ev
+            # Avoid duplicates by slug
+            if not any(d.slug == deck.slug for d in self._op_decks):
+                self._op_decks.append(deck)
+                self._op_refresh_rows()
+                self._refresh_generate_state()
+            self._op_url_var.set("")
+            self._op_status_var.set(f"Añadido: {deck.name}")
+            self._op_load_btn.state(["!disabled"])
+        elif kind == "op_deck_error":
+            _, msg = ev
+            self._op_status_var.set(f"Error: {msg}")
+            self._op_load_btn.state(["!disabled"])
         elif kind == "error":
             _, msg, run_dir = ev
             if run_dir is not None:

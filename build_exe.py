@@ -45,7 +45,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "MPCFillToPDF"
 ENTRY = ROOT / "gui" / "main.py"
-ASSETS = ROOT / "src" / "assets"
+ASSETS     = ROOT / "src" / "assets"
+ICONS      = ROOT / "icons"
+RESOURCES  = ROOT / "resources"
 VERSION_FILE = ROOT / "version_file.txt"
 BUNDLED_KEY_PATH = ROOT / "src" / "_bundled_key.py"
 
@@ -120,6 +122,8 @@ def main() -> None:
         "--name", APP_NAME,
         f"--version-file={VERSION_FILE}",
         f"--add-data={ASSETS}{';' if sys.platform == 'win32' else ':'}src/assets",
+        f"--add-data={ICONS}{';' if sys.platform == 'win32' else ':'}icons",
+        f"--add-data={RESOURCES}{';' if sys.platform == 'win32' else ':'}resources",
         # Make sure these packages are bundled even when discovered indirectly
         "--hidden-import=PIL.Image",
         "--hidden-import=reportlab.pdfgen",
