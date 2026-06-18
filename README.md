@@ -29,6 +29,22 @@ Pega la URL del mazo en la pestaña **One Piece** de la interfaz gráfica y puls
 
 ---
 
+### Riftbound TCG
+
+| Web | URL de ejemplo |
+|-----|---------------|
+| [riftbound.gg](https://riftbound.gg) | `https://riftbound.gg/decks/nombre-del-mazo/` |
+| [piltoverarchive.com](https://piltoverarchive.com) | `https://piltoverarchive.com/decks/view/<UUID>` |
+| [riftmana.com](https://riftmana.com) | `https://riftmana.com/decks/nombre-del-mazo` |
+| [riftbinder.com](https://riftbinder.com) | `https://riftbinder.com/decks/<ID>` |
+| [riftdex.com](https://riftdex.com) | `https://riftdex.com/deck/<UUID>` |
+
+Pega la URL del mazo en la pestaña **Riftbound** de la interfaz gráfica y pulsa **Añadir**.
+
+> **Nota:** Solo se pueden descargar mazos **públicos**. Si el mazo no está disponible (privado o eliminado), aparecerá un mensaje de error.
+
+---
+
 ## Clave de API de Google Drive (recomendado)
 
 Las imágenes de los XMLs de MPCFill están alojadas en Google Drive. Sin configuración adicional, el programa las descarga usando `gdown` (peticiones anónimas), que puede recibir errores **429 — rate limit** al descargar muchas imágenes seguidas.
