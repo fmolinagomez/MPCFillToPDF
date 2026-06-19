@@ -22,14 +22,14 @@ except ImportError:
 
 THREADS = 5
 _MAX_RETRIES = 4
-_INITIAL_BACKOFF = 1.0       # seconds; doubles on each retry (1 → 2 → 4 → 8)
-_TIMEOUT_RETRY_DELAY = 5.0   # seconds to wait before retrying timed-out images
+_INITIAL_BACKOFF = 1.0  # seconds; doubles on each retry (1 → 2 → 4 → 8)
+_TIMEOUT_RETRY_DELAY = 5.0  # seconds to wait before retrying timed-out images
 
 # Per-image download timeouts.  The read timeout fires only when *no data is
 # received* for that many seconds — it does not limit total download time, so
 # large files on a slow connection will still work.
-_CONNECT_TIMEOUT = 10   # seconds to establish the TCP connection
-_READ_TIMEOUT    = 30   # seconds without receiving any data
+_CONNECT_TIMEOUT = 10  # seconds to establish the TCP connection
+_READ_TIMEOUT = 30  # seconds without receiving any data
 
 # Loaded once at import time; None means fall back to gdown.
 _DRIVE_API_KEY: str | None = get_drive_api_key()
@@ -58,6 +58,7 @@ _install_download_timeout()
 
 class DownloadRateLimitError(Exception):
     """Raised when Google Drive rate-limits us and all retries are exhausted."""
+
     pass
 
 
@@ -74,6 +75,7 @@ class DownloadPartialError(Exception):
         xml_context:       drive_id → (xml_filename, 1-based position);
                            populated by the pipeline after enrichment.
     """
+
     def __init__(
         self,
         permission_errors: list[tuple[str, str]],
@@ -113,16 +115,21 @@ def _gdown_url(drive_id: str) -> str:
 
 
 def _drive_api_url(drive_id: str, api_key: str) -> str:
-    return (
-        f"https://www.googleapis.com/drive/v3/files/{drive_id}"
-        f"?alt=media&key={api_key}"
-    )
+    return f"https://www.googleapis.com/drive/v3/files/{drive_id}?alt=media&key={api_key}"
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     msg = str(exc).lower()
-    keywords = ("429", "too many", "quota", "rate limit", "try again later",
-                 "limit exceeded", "503", "service unavailable")
+    keywords = (
+        "429",
+        "too many",
+        "quota",
+        "rate limit",
+        "try again later",
+        "limit exceeded",
+        "503",
+        "service unavailable",
+    )
     if any(kw in msg for kw in keywords):
         return True
     resp = getattr(exc, "response", None)
@@ -192,9 +199,7 @@ def download_image(drive_id: str, dest_dir: Path, filename: str) -> Path:
                 # Files shared as "Anyone with the link" return 403 via the API but are
                 # downloadable via gdown (which follows Google's web redirect flow).
                 # Fall back to gdown before declaring a permission failure.
-                _log.info(
-                    "API 403 for %s — retrying via gdown fallback", filename
-                )
+                _log.info("API 403 for %s — retrying via gdown fallback", filename)
                 try:
                     gdown.download(_gdown_url(drive_id), str(tmp_path), quiet=True)
                     tmp_path.replace(output_path)
@@ -203,9 +208,11 @@ def download_image(drive_id: str, dest_dir: Path, filename: str) -> Path:
                 except Exception as gdown_exc:
                     _safe_unlink(tmp_path)
                     if _is_permission_error(gdown_exc):
-                        _log.error("Permission denied (gdown also failed): %s (%s)", filename, drive_id)
+                        _log.error(
+                            "Permission denied (gdown also failed): %s (%s)", filename, drive_id
+                        )
                         raise DownloadPermissionError(drive_id, filename) from gdown_exc
-                    if isinstance(gdown_exc, (requests.exceptions.Timeout, TimeoutError)):
+                    if isinstance(gdown_exc, requests.exceptions.Timeout | TimeoutError):
                         _log.error("Timeout via gdown fallback: %s (%s)", filename, drive_id)
                         raise DownloadTimeoutError(drive_id, filename) from gdown_exc
                     raise gdown_exc
@@ -216,7 +223,10 @@ def download_image(drive_id: str, dest_dir: Path, filename: str) -> Path:
                 if attempt < _MAX_RETRIES:
                     _log.warning(
                         "Rate limited on %s, retry %d/%d in %.0fs",
-                        drive_id, attempt + 1, _MAX_RETRIES, delay,
+                        drive_id,
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        delay,
                     )
                     time.sleep(delay)
                     delay *= 2
@@ -310,8 +320,11 @@ def download_all(
 
     # Retry timed-out images once, sequentially, after a brief pause.
     if _timeout_errors:
-        _log.info("Retrying %d timed-out image(s) after %.0fs…", len(_timeout_errors),
-                  _TIMEOUT_RETRY_DELAY)
+        _log.info(
+            "Retrying %d timed-out image(s) after %.0fs…",
+            len(_timeout_errors),
+            _TIMEOUT_RETRY_DELAY,
+        )
         time.sleep(_TIMEOUT_RETRY_DELAY)
         still_failed: list[tuple[str, str]] = []
         for drive_id, card_name in _timeout_errors:

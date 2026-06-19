@@ -1,5 +1,6 @@
 """MPCFillToPDF GUI — pick XML(s) and optional local images, run the pipeline,
 open the output folder."""
+
 import io
 import logging
 import math
@@ -12,31 +13,35 @@ import time
 import tkinter as tk
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 try:
     import windnd
+
     _WINDND_AVAILABLE = True
 except ImportError:
     _WINDND_AVAILABLE = False
 
 from PIL import Image, ImageTk
+
 from gui.paths import output_dir, work_dir
 from src.cancellation import Cancelled
+from src.constants import CARDS_PER_PAGE, SUPPORTED_IMAGE_EXTS, Stage
 from src.downloader import (
     DownloadPartialError,
     DownloadPermissionError,
     DownloadRateLimitError,
     DownloadTimeoutError,
 )
-from src.op_scraper import OPDeck, scrape_deck, download_images as op_download, get_op_backs, expand_deck as op_expand
-from src.rb_scraper import RBDeck, scrape_deck as rb_scrape_deck, download_images as rb_download, get_rb_backs, expand_deck as rb_expand
-from src.parser import parse, CardOrder
-from src.pipeline import run, run_merged, run_locals_only, run_plan
+from src.op_scraper import OPDeck, get_op_backs, scrape_deck
+from src.op_scraper import download_images as op_download
+from src.op_scraper import expand_deck as op_expand
+from src.parser import CardOrder, parse
+from src.pipeline import run_locals_only, run_plan
 from src.precheck import (
-    CARDS_PER_PAGE,
     analyze,
     check_drive_access,
     collect_drive_ids,
@@ -45,7 +50,11 @@ from src.precheck import (
     plan,
     write_manifest,
 )
-from src.validator import validate, ValidationWarning
+from src.rb_scraper import RBDeck, get_rb_backs
+from src.rb_scraper import download_images as rb_download
+from src.rb_scraper import expand_deck as rb_expand
+from src.rb_scraper import scrape_deck as rb_scrape_deck
+from src.validator import ValidationWarning, validate
 
 _log = logging.getLogger(__name__)
 
@@ -54,6 +63,7 @@ def _notify(title: str, message: str) -> None:
     """Show a system notification (best-effort; silently ignored if plyer is missing)."""
     try:
         from plyer import notification as _n
+
         _n.notify(title=title, message=message, app_name=APP_TITLE, timeout=8)
     except Exception:
         pass
@@ -61,10 +71,10 @@ def _notify(title: str, message: str) -> None:
 
 APP_TITLE = "MPCFillToPDF"
 STAGE_LABELS = {
-    "verify":   "Verificando XML",
-    "download": "Descargando",
-    "crop":     "Procesando imágenes",
-    "pdf":      "Generando PDF, Páginas",
+    Stage.VERIFY: "Verificando XML",
+    Stage.DOWNLOAD: "Descargando",
+    Stage.CROP: "Procesando imágenes",
+    Stage.PDF: "Generando PDF, Páginas",
 }
 
 IMAGE_FILETYPES = [
@@ -84,11 +94,13 @@ def _ellipsize(name: str, width: int) -> str:
 def _attach_context_menu(widget: tk.Widget) -> None:
     """Attach a right-click context menu (cut/copy/paste/select all) to an Entry or Text widget."""
     menu = tk.Menu(widget, tearoff=0)
-    menu.add_command(label="Cortar",          command=lambda: widget.event_generate("<<Cut>>"))
-    menu.add_command(label="Copiar",          command=lambda: widget.event_generate("<<Copy>>"))
-    menu.add_command(label="Pegar",           command=lambda: widget.event_generate("<<Paste>>"))
+    menu.add_command(label="Cortar", command=lambda: widget.event_generate("<<Cut>>"))
+    menu.add_command(label="Copiar", command=lambda: widget.event_generate("<<Copy>>"))
+    menu.add_command(label="Pegar", command=lambda: widget.event_generate("<<Paste>>"))
     menu.add_separator()
-    menu.add_command(label="Seleccionar todo", command=lambda: widget.event_generate("<<SelectAll>>"))
+    menu.add_command(
+        label="Seleccionar todo", command=lambda: widget.event_generate("<<SelectAll>>")
+    )
     widget.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
 
 
@@ -109,27 +121,35 @@ def _load_tab_icon(name: str, size: tuple[int, int] = (20, 20)) -> ImageTk.Photo
 
 
 _PB_DOWNLOAD_COLOR = "#0078d4"  # Windows blue
-_PB_CROP_COLOR     = "#2e7d32"  # dark green
+_PB_CROP_COLOR = "#2e7d32"  # dark green
 
 
 class _XmlPb(tk.Canvas):
     """Canvas progress bar with centered text overlay — works on all themes."""
+
     _W = 130
     _H = 18
     _TROUGH = "#dde5f0"
     _BORDER = "#9aafc7"
-    _TEXT   = "#f0f0f0"
+    _TEXT = "#f0f0f0"
 
     def __init__(self, parent, **kw):
         super().__init__(
-            parent, width=self._W, height=self._H,
-            bg=self._TROUGH, highlightthickness=1, highlightbackground=self._BORDER,
+            parent,
+            width=self._W,
+            height=self._H,
+            bg=self._TROUGH,
+            highlightthickness=1,
+            highlightbackground=self._BORDER,
             **kw,
         )
         self._bar = self.create_rectangle(0, 0, 0, self._H, fill=_PB_DOWNLOAD_COLOR, outline="")
         self._lbl = self.create_text(
-            self._W // 2, self._H // 2, text="",
-            fill=self._TEXT, font=("Segoe UI", 8),
+            self._W // 2,
+            self._H // 2,
+            text="",
+            fill=self._TEXT,
+            font=("Segoe UI", 8),
         )
 
     def set_progress(self, pct: float, text: str = "", color: str | None = None) -> None:
@@ -142,6 +162,7 @@ class _XmlPb(tk.Canvas):
 
 class _ImageTooltip:
     """Floating image preview that appears when the mouse hovers over a widget."""
+
     _DELAY_MS = 350
     _MAX_W = 240
     _MAX_H = 336
@@ -272,8 +293,10 @@ class PreviewWindow(tk.Toplevel):
             self._img_labels.append(lbl_img)
 
             loading_lbl = tk.Label(
-                cell, text=self._SPINNER[0],
-                font=("Segoe UI", 9), fg="#888",
+                cell,
+                text=self._SPINNER[0],
+                font=("Segoe UI", 9),
+                fg="#888",
             )
             loading_lbl.pack()
             loading_lbl.bind("<MouseWheel>", _scroll)
@@ -281,14 +304,14 @@ class PreviewWindow(tk.Toplevel):
             self._loading_set.add(idx)
 
             name = _ellipsize(card.name, 12) if card.name else "(sin nombre)"
-            name_lbl = tk.Label(cell, text=name, font=("Segoe UI", 7),
-                                wraplength=self._THUMB_W)
+            name_lbl = tk.Label(cell, text=name, font=("Segoe UI", 7), wraplength=self._THUMB_W)
             name_lbl.pack()
             name_lbl.bind("<MouseWheel>", _scroll)
             count = len(card.slots)
             if count > 1:
-                count_lbl = tk.Label(cell, text=f"x{count}",
-                                     font=("Segoe UI", 7, "bold"), fg="#555")
+                count_lbl = tk.Label(
+                    cell, text=f"x{count}", font=("Segoe UI", 7, "bold"), fg="#555"
+                )
                 count_lbl.pack()
                 count_lbl.bind("<MouseWheel>", _scroll)
 
@@ -311,6 +334,7 @@ class PreviewWindow(tk.Toplevel):
 
     def _fetch(self, drive_id: str) -> bytes:
         import requests as _req
+
         resp = _req.get(self._THUMB_URL.format(drive_id), timeout=(5, 15))
         resp.raise_for_status()
         return resp.content
@@ -369,6 +393,16 @@ class PreviewWindow(tk.Toplevel):
         self.destroy()
 
 
+@dataclass
+class AppState:
+    xml_paths: list[Path] = field(default_factory=list)
+    local_fronts: list[Path] = field(default_factory=list)
+    local_backs: list[Path] = field(default_factory=list)
+    front_back_paths: list[Path | None] = field(default_factory=list)
+    local_front_crop: list[bool] = field(default_factory=list)
+    local_back_crop: list[bool] = field(default_factory=list)
+
+
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -376,18 +410,11 @@ class App:
         root.geometry("1200x760")
         root.minsize(1000, 660)
 
-        self.xml_paths: list[Path] = []
+        self.state = AppState()
         self._xml_rows: list[dict] = []
         self._xml_card_counts: dict[Path, int] = {}
         self._xml_orders: dict[Path, CardOrder] = {}
         self._xml_validations: dict[Path, list[ValidationWarning]] = {}
-        self.local_fronts: list[Path] = []
-        self.local_backs: list[Path] = []
-        # Per-front back assignment: None = use XML cardback fallback.
-        self.front_back_paths: list[Path | None] = []
-        # Per-card "needs MPC bleed crop?" — parallel to fronts/backs.
-        self.local_front_crop: list[bool] = []
-        self.local_back_crop: list[bool] = []
         # Tk widgets per row (parallel to local_fronts / local_backs).
         self._front_rows: list[dict] = []
         self._back_rows: list[dict] = []
@@ -427,7 +454,8 @@ class App:
         bottom_controls.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
 
         self.keep_cache_cb = ttk.Checkbutton(
-            bottom_controls, text="Guardar en el PC las imágenes entre ejecuciones",
+            bottom_controls,
+            text="Guardar en el PC las imágenes entre ejecuciones",
             variable=self.keep_cache,
         )
         self.keep_cache_cb.pack(anchor=tk.W)
@@ -435,14 +463,16 @@ class App:
         ttk.Separator(bottom_controls, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
 
         self.soriano_btn = ttk.Button(
-            bottom_controls, text="Generar PDF con traseras (Para copisteria, con espejo horizontal)",
+            bottom_controls,
+            text="Generar PDF con traseras (Para copisteria, con espejo horizontal)",
             command=lambda: self._start(fronts_only=False),
         )
         self.soriano_btn.pack(fill=tk.X)
         self.soriano_btn.state(["disabled"])
 
         self.fronts_only_btn = ttk.Button(
-            bottom_controls, text="Generar PDF solo frontales",
+            bottom_controls,
+            text="Generar PDF solo frontales",
             command=lambda: self._start(fronts_only=True),
         )
         self.fronts_only_btn.pack(fill=tk.X, pady=(4, 0))
@@ -451,7 +481,9 @@ class App:
         self.stop_btn = ttk.Button(bottom_controls, text="Detener", command=self._request_stop)
 
         self.status_var = tk.StringVar(value="Listo. Selecciona uno o más XML o imágenes locales.")
-        ttk.Label(bottom_controls, textvariable=self.status_var, anchor=tk.W).pack(fill=tk.X, pady=(10, 2))
+        ttk.Label(bottom_controls, textvariable=self.status_var, anchor=tk.W).pack(
+            fill=tk.X, pady=(10, 2)
+        )
 
         self.progress = ttk.Progressbar(bottom_controls, mode="determinate", maximum=100)
         self.progress.pack(fill=tk.X)
@@ -459,16 +491,20 @@ class App:
         out_row = ttk.Frame(bottom_controls)
         out_row.pack(fill=tk.X, pady=(8, 0))
         self.out_dir_var = tk.StringVar(value=str(output_dir()))
-        self.out_label = ttk.Label(out_row, textvariable=self.out_dir_var,
-                                   foreground="#666", anchor=tk.W)
+        self.out_label = ttk.Label(
+            out_row, textvariable=self.out_dir_var, foreground="#666", anchor=tk.W
+        )
         self.out_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(out_row, text="Cambiar…", command=self._pick_output_dir,
-                   width=9).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(out_row, text="Cambiar…", command=self._pick_output_dir, width=9).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
 
         self.timing_var = tk.StringVar(value="")
         ttk.Label(
-            bottom_controls, textvariable=self.timing_var,
-            foreground="#888", anchor=tk.W,
+            bottom_controls,
+            textvariable=self.timing_var,
+            foreground="#888",
+            anchor=tk.W,
         ).pack(fill=tk.X)
 
         # Pre-flight summary (updates whenever XMLs / locals change)
@@ -532,28 +568,27 @@ class App:
         xml_list_frame.columnconfigure(0, weight=1)
         xml_list_frame.rowconfigure(0, weight=1)
 
-        self.xml_canvas, self.xml_inner, self._xml_window = (
-            self._build_scrollable_rows(xml_list_frame)
+        self.xml_canvas, self.xml_inner, self._xml_window = self._build_scrollable_rows(
+            xml_list_frame
         )
-        self.xml_canvas.bind("<Enter>",
-                             lambda _e: self._bind_mousewheel(self.xml_canvas, True))
-        self.xml_canvas.bind("<Leave>",
-                             lambda _e: self._bind_mousewheel(self.xml_canvas, False))
+        self.xml_canvas.bind("<Enter>", lambda _e: self._bind_mousewheel(self.xml_canvas, True))
+        self.xml_canvas.bind("<Leave>", lambda _e: self._bind_mousewheel(self.xml_canvas, False))
 
         dnd_hint = " o arrastra aquí" if _WINDND_AVAILABLE else ""
         self._xml_empty_label = ttk.Label(
             self.xml_inner,
             text=f"(sin XMLs — usa «Seleccionar XMLs…»{dnd_hint})",
-            foreground="#777", padding=(8, 10),
+            foreground="#777",
+            padding=(8, 10),
         )
         self._xml_empty_label.pack(anchor="w")
 
         xml_btn_row = ttk.Frame(parent)
         xml_btn_row.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
-        ttk.Button(xml_btn_row, text="Seleccionar XMLs…",
-                   command=self._pick_xmls).pack(side=tk.LEFT)
-        ttk.Button(xml_btn_row, text="Vaciar",
-                   command=self._clear_xmls).pack(side=tk.LEFT, padx=6)
+        ttk.Button(xml_btn_row, text="Seleccionar XMLs…", command=self._pick_xmls).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(xml_btn_row, text="Vaciar", command=self._clear_xmls).pack(side=tk.LEFT, padx=6)
 
     def _build_onepiece_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -568,14 +603,13 @@ class App:
         self._op_url_entry.grid(row=0, column=1, sticky="ew")
         self._op_url_entry.bind("<Return>", lambda _e: self._op_load_deck())
         _attach_context_menu(self._op_url_entry)
-        self._op_load_btn = ttk.Button(url_row, text="Añadir", width=7,
-                                       command=self._op_load_deck)
+        self._op_load_btn = ttk.Button(url_row, text="Añadir", width=7, command=self._op_load_deck)
         self._op_load_btn.grid(row=0, column=2, padx=(6, 0))
 
         self._op_status_var = tk.StringVar(value="")
-        ttk.Label(url_row, textvariable=self._op_status_var,
-                  foreground="#555", anchor="w").grid(
-            row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+        ttk.Label(url_row, textvariable=self._op_status_var, foreground="#555", anchor="w").grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0)
+        )
 
         op_list_frame = ttk.Frame(parent)
         op_list_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 2))
@@ -583,22 +617,20 @@ class App:
         op_list_frame.rowconfigure(0, weight=1)
 
         self._op_canvas, self._op_inner, _ = self._build_scrollable_rows(op_list_frame)
-        self._op_canvas.bind("<Enter>",
-                             lambda _e: self._bind_mousewheel(self._op_canvas, True))
-        self._op_canvas.bind("<Leave>",
-                             lambda _e: self._bind_mousewheel(self._op_canvas, False))
+        self._op_canvas.bind("<Enter>", lambda _e: self._bind_mousewheel(self._op_canvas, True))
+        self._op_canvas.bind("<Leave>", lambda _e: self._bind_mousewheel(self._op_canvas, False))
 
         self._op_empty_label = ttk.Label(
             self._op_inner,
             text="(introduce una URL de mazo y haz clic en «Añadir»)",
-            foreground="#777", padding=(8, 10),
+            foreground="#777",
+            padding=(8, 10),
         )
         self._op_empty_label.pack(anchor="w")
 
         op_btn_row = ttk.Frame(parent)
         op_btn_row.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 6))
-        ttk.Button(op_btn_row, text="Vaciar todo",
-                   command=self._op_clear).pack(side=tk.LEFT)
+        ttk.Button(op_btn_row, text="Vaciar todo", command=self._op_clear).pack(side=tk.LEFT)
 
     def _build_locals_pane(self, parent: ttk.Frame) -> None:
         local_frame = ttk.LabelFrame(parent, text="Imágenes locales (opcional)")
@@ -614,7 +646,8 @@ class App:
         ttk.Label(backs_hdr, text="Traseras (numeradas 1, 2, …):").pack(side=tk.LEFT)
         self._back_crop_all = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            backs_hdr, text="Recortar todas",
+            backs_hdr,
+            text="Recortar todas",
             variable=self._back_crop_all,
             command=self._on_back_crop_all,
         ).pack(side=tk.RIGHT, padx=(8, 0))
@@ -624,31 +657,35 @@ class App:
         backs_block.columnconfigure(0, weight=1)
         backs_block.rowconfigure(0, weight=1)
 
-        self.backs_canvas, self.backs_inner, self._backs_window = (
-            self._build_scrollable_rows(backs_block)
+        self.backs_canvas, self.backs_inner, self._backs_window = self._build_scrollable_rows(
+            backs_block
         )
-        self.backs_canvas.bind("<Enter>",
-                               lambda _e: self._bind_mousewheel(self.backs_canvas, True))
-        self.backs_canvas.bind("<Leave>",
-                               lambda _e: self._bind_mousewheel(self.backs_canvas, False))
+        self.backs_canvas.bind("<Enter>", lambda _e: self._bind_mousewheel(self.backs_canvas, True))
+        self.backs_canvas.bind(
+            "<Leave>", lambda _e: self._bind_mousewheel(self.backs_canvas, False)
+        )
 
         dnd_hint = " o arrastra aquí" if _WINDND_AVAILABLE else ""
         self._backs_empty_label = ttk.Label(
             self.backs_inner,
             text=f"(sin traseras — usa «Seleccionar imágenes…»{dnd_hint})",
-            foreground="#777", padding=(8, 10),
+            foreground="#777",
+            padding=(8, 10),
         )
         self._backs_empty_label.pack(anchor="w")
 
         backs_btn_row = ttk.Frame(backs_block)
         backs_btn_row.grid(row=1, column=0, sticky="ew", pady=(2, 6))
-        ttk.Button(backs_btn_row, text="Seleccionar imágenes…",
-                   command=self._pick_local_backs).pack(side=tk.LEFT)
-        ttk.Button(backs_btn_row, text="Vaciar",
-                   command=self._clear_local_backs).pack(side=tk.LEFT, padx=6)
+        ttk.Button(
+            backs_btn_row, text="Seleccionar imágenes…", command=self._pick_local_backs
+        ).pack(side=tk.LEFT)
+        ttk.Button(backs_btn_row, text="Vaciar", command=self._clear_local_backs).pack(
+            side=tk.LEFT, padx=6
+        )
 
         ttk.Separator(local_frame, orient=tk.HORIZONTAL).grid(
-            row=2, column=0, sticky="ew", padx=6, pady=(4, 4))
+            row=2, column=0, sticky="ew", padx=6, pady=(4, 4)
+        )
 
         # --- Fronts (bottom, scrollable rows with per-front back combo) -----
         fronts_block = ttk.Frame(local_frame)
@@ -662,7 +699,8 @@ class App:
         ttk.Label(fronts_hdr, textvariable=self._fronts_header_var).pack(side=tk.LEFT)
         self._front_crop_all = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            fronts_hdr, text="Recortar todas",
+            fronts_hdr,
+            text="Recortar todas",
             variable=self._front_crop_all,
             command=self._on_front_crop_all,
         ).pack(side=tk.RIGHT, padx=(8, 0))
@@ -672,28 +710,33 @@ class App:
         fronts_holder.columnconfigure(0, weight=1)
         fronts_holder.rowconfigure(0, weight=1)
 
-        self.fronts_canvas, self.fronts_inner, self._fronts_window = (
-            self._build_scrollable_rows(fronts_holder)
+        self.fronts_canvas, self.fronts_inner, self._fronts_window = self._build_scrollable_rows(
+            fronts_holder
         )
-        self.fronts_canvas.bind("<Enter>",
-                                lambda _e: self._bind_mousewheel(self.fronts_canvas, True))
-        self.fronts_canvas.bind("<Leave>",
-                                lambda _e: self._bind_mousewheel(self.fronts_canvas, False))
+        self.fronts_canvas.bind(
+            "<Enter>", lambda _e: self._bind_mousewheel(self.fronts_canvas, True)
+        )
+        self.fronts_canvas.bind(
+            "<Leave>", lambda _e: self._bind_mousewheel(self.fronts_canvas, False)
+        )
 
         dnd_hint = " o arrastra aquí" if _WINDND_AVAILABLE else ""
         self._fronts_empty_label = ttk.Label(
             self.fronts_inner,
             text=f"(sin frontales — usa «Seleccionar imágenes…»{dnd_hint})",
-            foreground="#777", padding=(8, 10),
+            foreground="#777",
+            padding=(8, 10),
         )
         self._fronts_empty_label.pack(anchor="w")
 
         fronts_btn_row = ttk.Frame(fronts_block)
         fronts_btn_row.grid(row=2, column=0, sticky="ew", pady=(4, 0))
-        ttk.Button(fronts_btn_row, text="Seleccionar imágenes…",
-                   command=self._pick_local_fronts).pack(side=tk.LEFT)
-        ttk.Button(fronts_btn_row, text="Vaciar",
-                   command=self._clear_local_fronts).pack(side=tk.LEFT, padx=6)
+        ttk.Button(
+            fronts_btn_row, text="Seleccionar imágenes…", command=self._pick_local_fronts
+        ).pack(side=tk.LEFT)
+        ttk.Button(fronts_btn_row, text="Vaciar", command=self._clear_local_fronts).pack(
+            side=tk.LEFT, padx=6
+        )
 
     def _build_scrollable_rows(self, parent: ttk.Frame):
         """Create a Canvas + inner Frame pair for a vertically scrolling list
@@ -764,9 +807,9 @@ class App:
             summary.columnconfigure(1, weight=1)
 
             # Deck name
-            ttk.Label(summary, text=_ellipsize(deck.name, 22),
-                      font=("Segoe UI", 9, "bold"), anchor="w").grid(
-                row=0, column=0, sticky="w", padx=(0, 12))
+            ttk.Label(
+                summary, text=_ellipsize(deck.name, 22), font=("Segoe UI", 9, "bold"), anchor="w"
+            ).grid(row=0, column=0, sticky="w", padx=(0, 12))
 
             # Leader info
             if leader:
@@ -774,26 +817,30 @@ class App:
                 leader_txt = f"Líder: {_ellipsize(leader.name, 18)}  ({color_txt})"
             else:
                 leader_txt = "(sin líder)"
-            ttk.Label(summary, text=leader_txt,
-                      foreground="#555", anchor="w").grid(
-                row=0, column=1, sticky="w")
+            ttk.Label(summary, text=leader_txt, foreground="#555", anchor="w").grid(
+                row=0, column=1, sticky="w"
+            )
 
             # Slots count
-            ttk.Label(summary, text=f"{deck.total_slots} cartas",
-                      foreground="#888", anchor="e").grid(
-                row=0, column=2, sticky="e", padx=(8, 6))
+            ttk.Label(
+                summary, text=f"{deck.total_slots} cartas", foreground="#888", anchor="e"
+            ).grid(row=0, column=2, sticky="e", padx=(8, 6))
 
             # Toggle details button
             expanded_var = tk.BooleanVar(value=False)
             toggle_btn = ttk.Button(
-                summary, text="Detalles ▼", width=10,
+                summary,
+                text="Detalles ▼",
+                width=10,
                 command=lambda i=idx: self._op_toggle_details(i),
             )
             toggle_btn.grid(row=0, column=3, padx=(0, 4))
 
             # Remove button
             ttk.Button(
-                summary, text="✕", width=2,
+                summary,
+                text="✕",
+                width=2,
                 command=lambda i=idx: self._op_remove_deck(i),
             ).grid(row=0, column=4)
 
@@ -811,25 +858,39 @@ class App:
                 else:
                     badge_text, badge_fg = f"x{card.quantity}", "#444"
                     badge_font = ("Segoe UI", 8)
-                ttk.Label(row_f, text=badge_text, foreground=badge_fg,
-                          font=badge_font, width=6, anchor="e").pack(side=tk.LEFT, padx=(0, 6))
-                ttk.Label(row_f, text=_ellipsize(card.name, 24),
-                          anchor="w", width=25).pack(side=tk.LEFT)
-                ttk.Label(row_f, text=card.card_id,
-                          foreground="#888", font=("Segoe UI", 8),
-                          anchor="w", width=10).pack(side=tk.LEFT, padx=(4, 0))
+                ttk.Label(
+                    row_f,
+                    text=badge_text,
+                    foreground=badge_fg,
+                    font=badge_font,
+                    width=6,
+                    anchor="e",
+                ).pack(side=tk.LEFT, padx=(0, 6))
+                ttk.Label(row_f, text=_ellipsize(card.name, 24), anchor="w", width=25).pack(
+                    side=tk.LEFT
+                )
+                ttk.Label(
+                    row_f,
+                    text=card.card_id,
+                    foreground="#888",
+                    font=("Segoe UI", 8),
+                    anchor="w",
+                    width=10,
+                ).pack(side=tk.LEFT, padx=(4, 0))
                 if card.colors:
-                    ttk.Label(row_f, text=" / ".join(card.colors),
-                              foreground="#555", font=("Segoe UI", 8)).pack(
-                        side=tk.LEFT, padx=(6, 0))
+                    ttk.Label(
+                        row_f, text=" / ".join(card.colors), foreground="#555", font=("Segoe UI", 8)
+                    ).pack(side=tk.LEFT, padx=(6, 0))
 
-            self._op_deck_rows.append({
-                "outer": outer,
-                "detail": detail,
-                "toggle_btn": toggle_btn,
-                "expanded": expanded_var,
-                "deck": deck,
-            })
+            self._op_deck_rows.append(
+                {
+                    "outer": outer,
+                    "detail": detail,
+                    "toggle_btn": toggle_btn,
+                    "expanded": expanded_var,
+                    "deck": deck,
+                }
+            )
 
         self._op_inner.update_idletasks()
         self._op_canvas.configure(scrollregion=self._op_canvas.bbox("all"))
@@ -880,14 +941,13 @@ class App:
         self._rb_url_entry.grid(row=0, column=1, sticky="ew")
         self._rb_url_entry.bind("<Return>", lambda _e: self._rb_load_deck())
         _attach_context_menu(self._rb_url_entry)
-        self._rb_load_btn = ttk.Button(url_row, text="Añadir", width=7,
-                                       command=self._rb_load_deck)
+        self._rb_load_btn = ttk.Button(url_row, text="Añadir", width=7, command=self._rb_load_deck)
         self._rb_load_btn.grid(row=0, column=2, padx=(6, 0))
 
         self._rb_status_var = tk.StringVar(value="")
-        ttk.Label(url_row, textvariable=self._rb_status_var,
-                  foreground="#555", anchor="w").grid(
-            row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+        ttk.Label(url_row, textvariable=self._rb_status_var, foreground="#555", anchor="w").grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0)
+        )
 
         rb_list_frame = ttk.Frame(parent)
         rb_list_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 2))
@@ -895,22 +955,20 @@ class App:
         rb_list_frame.rowconfigure(0, weight=1)
 
         self._rb_canvas, self._rb_inner, _ = self._build_scrollable_rows(rb_list_frame)
-        self._rb_canvas.bind("<Enter>",
-                             lambda _e: self._bind_mousewheel(self._rb_canvas, True))
-        self._rb_canvas.bind("<Leave>",
-                             lambda _e: self._bind_mousewheel(self._rb_canvas, False))
+        self._rb_canvas.bind("<Enter>", lambda _e: self._bind_mousewheel(self._rb_canvas, True))
+        self._rb_canvas.bind("<Leave>", lambda _e: self._bind_mousewheel(self._rb_canvas, False))
 
         self._rb_empty_label = ttk.Label(
             self._rb_inner,
             text="(introduce una URL de piltoverarchive.com, riftbound.gg, riftmana.com, riftbinder.com o riftdex.com)",
-            foreground="#777", padding=(8, 10),
+            foreground="#777",
+            padding=(8, 10),
         )
         self._rb_empty_label.pack(anchor="w")
 
         rb_btn_row = ttk.Frame(parent)
         rb_btn_row.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 6))
-        ttk.Button(rb_btn_row, text="Vaciar todo",
-                   command=self._rb_clear).pack(side=tk.LEFT)
+        ttk.Button(rb_btn_row, text="Vaciar todo", command=self._rb_clear).pack(side=tk.LEFT)
 
     def _rb_load_deck(self) -> None:
         url = self._rb_url_var.get().strip()
@@ -958,27 +1016,33 @@ class App:
             summary.pack(fill=tk.X, padx=6, pady=4)
             summary.columnconfigure(1, weight=1)
 
-            ttk.Label(summary, text=_ellipsize(deck.name, 28),
-                      font=("Segoe UI", 9, "bold"), anchor="w").grid(
-                row=0, column=0, sticky="w", padx=(0, 12))
+            ttk.Label(
+                summary, text=_ellipsize(deck.name, 28), font=("Segoe UI", 9, "bold"), anchor="w"
+            ).grid(row=0, column=0, sticky="w", padx=(0, 12))
 
             by_sec = deck.by_section()
             sec_parts = [
                 f"{_SECTION_LABELS.get(s, s)}: {sum(c.quantity for c in cards)}"
-                for s, cards in by_sec.items() if cards
+                for s, cards in by_sec.items()
+                if cards
             ]
-            ttk.Label(summary, text="  |  ".join(sec_parts),
-                      foreground="#555", anchor="w", font=("Segoe UI", 8)).grid(
-                row=0, column=1, sticky="w")
+            ttk.Label(
+                summary,
+                text="  |  ".join(sec_parts),
+                foreground="#555",
+                anchor="w",
+                font=("Segoe UI", 8),
+            ).grid(row=0, column=1, sticky="w")
 
-            ttk.Label(summary, text=f"{deck.total_slots} cartas",
-                      foreground="#888", anchor="e").grid(
-                row=0, column=2, sticky="e", padx=(8, 6))
+            ttk.Label(
+                summary, text=f"{deck.total_slots} cartas", foreground="#888", anchor="e"
+            ).grid(row=0, column=2, sticky="e", padx=(8, 6))
 
             print_runes_var = tk.BooleanVar(value=True)
             has_runes = bool(by_sec.get("rune"))
             runes_cb = ttk.Checkbutton(
-                summary, text="imprimir runas",
+                summary,
+                text="imprimir runas",
                 variable=print_runes_var,
             )
             if not has_runes:
@@ -987,13 +1051,17 @@ class App:
 
             expanded_var = tk.BooleanVar(value=False)
             toggle_btn = ttk.Button(
-                summary, text="Detalles ▼", width=10,
+                summary,
+                text="Detalles ▼",
+                width=10,
                 command=lambda i=idx: self._rb_toggle_details(i),
             )
             toggle_btn.grid(row=0, column=4, padx=(0, 4))
 
             ttk.Button(
-                summary, text="✕", width=2,
+                summary,
+                text="✕",
+                width=2,
                 command=lambda i=idx: self._rb_remove_deck(i),
             ).grid(row=0, column=5)
 
@@ -1003,29 +1071,46 @@ class App:
                 if not cards:
                     continue
                 sec_lbl = _SECTION_LABELS.get(section, section)
-                ttk.Label(detail, text=f"── {sec_lbl} ──",
-                          foreground="#888", font=("Segoe UI", 8, "italic"),
-                          padding=(12, 2, 0, 0)).pack(anchor="w")
+                ttk.Label(
+                    detail,
+                    text=f"── {sec_lbl} ──",
+                    foreground="#888",
+                    font=("Segoe UI", 8, "italic"),
+                    padding=(12, 2, 0, 0),
+                ).pack(anchor="w")
                 for card in cards:
                     row_f = ttk.Frame(detail)
                     row_f.pack(fill=tk.X, pady=0, padx=(12, 4))
-                    ttk.Label(row_f, text=f"x{card.quantity}",
-                              foreground="#444", font=("Segoe UI", 8),
-                              width=4, anchor="e").pack(side=tk.LEFT, padx=(0, 6))
-                    ttk.Label(row_f, text=_ellipsize(card.name, 26),
-                              anchor="w", width=27).pack(side=tk.LEFT)
-                    ttk.Label(row_f, text=card.card_type,
-                              foreground="#888", font=("Segoe UI", 8),
-                              anchor="w", width=12).pack(side=tk.LEFT, padx=(4, 0))
+                    ttk.Label(
+                        row_f,
+                        text=f"x{card.quantity}",
+                        foreground="#444",
+                        font=("Segoe UI", 8),
+                        width=4,
+                        anchor="e",
+                    ).pack(side=tk.LEFT, padx=(0, 6))
+                    ttk.Label(row_f, text=_ellipsize(card.name, 26), anchor="w", width=27).pack(
+                        side=tk.LEFT
+                    )
+                    ttk.Label(
+                        row_f,
+                        text=card.card_type,
+                        foreground="#888",
+                        font=("Segoe UI", 8),
+                        anchor="w",
+                        width=12,
+                    ).pack(side=tk.LEFT, padx=(4, 0))
 
-            self._rb_deck_rows.append({
-                "outer": outer,
-                "detail": detail,
-                "toggle_btn": toggle_btn,
-                "expanded": expanded_var,
-                "deck": deck,
-                "print_runes_var": print_runes_var,
-            })
+            self._rb_deck_rows.append(
+                {
+                    "outer": outer,
+                    "detail": detail,
+                    "toggle_btn": toggle_btn,
+                    "expanded": expanded_var,
+                    "deck": deck,
+                    "print_runes_var": print_runes_var,
+                }
+            )
 
         self._rb_inner.update_idletasks()
         self._rb_canvas.configure(scrollregion=self._rb_canvas.bbox("all"))
@@ -1071,8 +1156,8 @@ class App:
         added = 0
         for p in paths:
             pp = Path(p)
-            if pp not in self.xml_paths:
-                self.xml_paths.append(pp)
+            if pp not in self.state.xml_paths:
+                self.state.xml_paths.append(pp)
                 added += 1
                 if pp not in self._xml_card_counts:
                     try:
@@ -1093,21 +1178,21 @@ class App:
                         self._xml_validations[pp] = []
         if added:
             self._refresh_xml_rows()
-            self.status_var.set(f"{len(self.xml_paths)} XML(s) en cola.")
+            self.status_var.set(f"{len(self.state.xml_paths)} XML(s) en cola.")
         self._refresh_generate_state()
 
     def _remove_xml(self, idx: int) -> None:
-        if 0 <= idx < len(self.xml_paths):
-            p = self.xml_paths[idx]
+        if 0 <= idx < len(self.state.xml_paths):
+            p = self.state.xml_paths[idx]
             self._xml_card_counts.pop(p, None)
             self._xml_orders.pop(p, None)
             self._xml_validations.pop(p, None)
-            del self.xml_paths[idx]
+            del self.state.xml_paths[idx]
             self._refresh_xml_rows()
             self._refresh_generate_state()
 
     def _clear_xmls(self) -> None:
-        self.xml_paths.clear()
+        self.state.xml_paths.clear()
         self._xml_card_counts.clear()
         self._xml_orders.clear()
         self._xml_validations.clear()
@@ -1119,24 +1204,28 @@ class App:
             row["frame"].destroy()
         self._xml_rows.clear()
 
-        if not self.xml_paths:
+        if not self.state.xml_paths:
             self._xml_empty_label.pack(anchor="w")
             return
         self._xml_empty_label.pack_forget()
 
-        for i, xml_path in enumerate(self.xml_paths):
+        for i, xml_path in enumerate(self.state.xml_paths):
             frame = ttk.Frame(self.xml_inner)
             frame.pack(fill=tk.X, pady=1, padx=2)
             frame.columnconfigure(0, weight=1)
 
             ttk.Label(
-                frame, text=_ellipsize(xml_path.name, 32), anchor="w",
+                frame,
+                text=_ellipsize(xml_path.name, 32),
+                anchor="w",
             ).grid(row=0, column=0, sticky="ew", padx=(4, 8))
 
             card_count = self._xml_card_counts.get(xml_path)
             cards_text = f"{card_count} cartas" if card_count is not None else ""
             ttk.Label(frame, text=cards_text, foreground="#555", width=10, anchor="e").grid(
-                row=0, column=1, padx=(0, 8),
+                row=0,
+                column=1,
+                padx=(0, 8),
             )
 
             pb = _XmlPb(frame)
@@ -1149,42 +1238,56 @@ class App:
             count_lbl.grid_remove()
 
             ttk.Button(
-                frame, text="▲", width=2,
+                frame,
+                text="▲",
+                width=2,
                 command=lambda idx=i: self._move_xml_up(idx),
             ).grid(row=0, column=4, padx=(0, 1))
             ttk.Button(
-                frame, text="▼", width=2,
+                frame,
+                text="▼",
+                width=2,
                 command=lambda idx=i: self._move_xml_down(idx),
             ).grid(row=0, column=5, padx=(0, 1))
             ttk.Button(
-                frame, text="✕", width=2,
+                frame,
+                text="✕",
+                width=2,
                 command=lambda idx=i: self._remove_xml(idx),
             ).grid(row=0, column=6, padx=(0, 1))
             ttk.Button(
-                frame, text="Ver…", width=4,
+                frame,
+                text="Ver…",
+                width=4,
                 command=lambda p=xml_path: self._show_preview(p),
             ).grid(row=0, column=7, padx=(0, 2))
 
             xml_warnings = self._xml_validations.get(xml_path, [])
             warn_btn = ttk.Button(
-                frame, text="⚠", width=2,
+                frame,
+                text="⚠",
+                width=2,
                 command=lambda p=xml_path: self._show_xml_warnings(p),
             )
             warn_btn.grid(row=0, column=8, padx=(0, 2))
             if not xml_warnings:
                 warn_btn.grid_remove()
 
-            self._xml_rows.append({
-                "frame": frame, "pb": pb,
-                "count_var": count_var, "count_lbl": count_lbl,
-                "warn_btn": warn_btn,
-            })
+            self._xml_rows.append(
+                {
+                    "frame": frame,
+                    "pb": pb,
+                    "count_var": count_var,
+                    "count_lbl": count_lbl,
+                    "warn_btn": warn_btn,
+                }
+            )
 
         self.xml_inner.update_idletasks()
         self.xml_canvas.configure(scrollregion=self.xml_canvas.bbox("all"))
 
     def _show_xml_download_progress(self, xml_name: str, done: int, total: int) -> None:
-        for xml_path, row in zip(self.xml_paths, self._xml_rows):
+        for xml_path, row in zip(self.state.xml_paths, self._xml_rows):
             if xml_path.name == xml_name:
                 pct = (done / total * 100.0) if total else 100.0
                 row["pb"].set_progress(pct, "Descargando", color=_PB_DOWNLOAD_COLOR)
@@ -1194,7 +1297,7 @@ class App:
                 break
 
     def _show_xml_crop_progress(self, xml_name: str, done: int, total: int) -> None:
-        for xml_path, row in zip(self.xml_paths, self._xml_rows):
+        for xml_path, row in zip(self.state.xml_paths, self._xml_rows):
             if xml_path.name == xml_name:
                 pct = (done / total * 100.0) if total else 100.0
                 row["pb"].set_progress(pct, "Recortando", color=_PB_CROP_COLOR)
@@ -1235,93 +1338,102 @@ class App:
             title="Selecciona imágenes locales (traseras)",
             filetypes=IMAGE_FILETYPES,
         )
-        was_empty = not self.local_backs
+        was_empty = not self.state.local_backs
         added = False
         for p in paths:
             pp = Path(p)
-            if pp not in self.local_backs:
-                self.local_backs.append(pp)
-                self.local_back_crop.append(False)
+            if pp not in self.state.local_backs:
+                self.state.local_backs.append(pp)
+                self.state.local_back_crop.append(False)
                 added = True
         if added:
             # Going from 0 → ≥1 backs: auto-assign the new first back to any
             # fronts that don't already have an explicit pick.
-            if was_empty and self.local_backs:
-                first = self.local_backs[0]
-                for i, assigned in enumerate(self.front_back_paths):
+            if was_empty and self.state.local_backs:
+                first = self.state.local_backs[0]
+                for i, assigned in enumerate(self.state.front_back_paths):
                     if assigned is None:
-                        self.front_back_paths[i] = first
+                        self.state.front_back_paths[i] = first
             self._refresh_back_rows()
             self._refresh_front_rows()
             self._refresh_generate_state()
 
     def _remove_back(self, idx: int) -> None:
-        if not (0 <= idx < len(self.local_backs)):
+        if not (0 <= idx < len(self.state.local_backs)):
             return
-        removed_path = self.local_backs[idx]
-        del self.local_backs[idx]
-        del self.local_back_crop[idx]
-        for i, assigned in enumerate(self.front_back_paths):
+        removed_path = self.state.local_backs[idx]
+        del self.state.local_backs[idx]
+        del self.state.local_back_crop[idx]
+        for i, assigned in enumerate(self.state.front_back_paths):
             if assigned == removed_path:
-                self.front_back_paths[i] = None
+                self.state.front_back_paths[i] = None
         self._refresh_back_rows()
         self._refresh_front_rows()
         self._refresh_generate_state()
 
     def _clear_local_backs(self) -> None:
-        if not self.local_backs:
+        if not self.state.local_backs:
             return
-        self.local_backs.clear()
-        self.local_back_crop.clear()
+        self.state.local_backs.clear()
+        self.state.local_back_crop.clear()
         # All explicit assignments are now invalid → fall back to default.
-        self.front_back_paths = [None] * len(self.front_back_paths)
+        self.state.front_back_paths = [None] * len(self.state.front_back_paths)
         self._refresh_back_rows()
         self._refresh_front_rows()
         self._refresh_generate_state()
 
     def _on_back_crop_change(self, idx: int, var: tk.BooleanVar) -> None:
-        if 0 <= idx < len(self.local_back_crop):
-            self.local_back_crop[idx] = bool(var.get())
+        if 0 <= idx < len(self.state.local_back_crop):
+            self.state.local_back_crop[idx] = bool(var.get())
 
     def _refresh_back_rows(self) -> None:
         for row in self._back_rows:
             row["frame"].destroy()
         self._back_rows.clear()
 
-        if not self.local_backs:
+        if not self.state.local_backs:
             self._backs_empty_label.pack(anchor="w")
             return
         self._backs_empty_label.pack_forget()
 
-        for i, back_path in enumerate(self.local_backs):
+        for i, back_path in enumerate(self.state.local_backs):
             row = ttk.Frame(self.backs_inner)
             row.pack(fill=tk.X, pady=1, padx=2)
 
-            ttk.Label(row, text=f"{i + 1:>3}.", width=4,
-                      anchor="e").pack(side=tk.LEFT)
+            ttk.Label(row, text=f"{i + 1:>3}.", width=4, anchor="e").pack(side=tk.LEFT)
             name_lbl = ttk.Label(
-                row, text=_ellipsize(back_path.name, FRONT_NAME_WIDTH),
-                width=FRONT_NAME_WIDTH + 1, anchor="w",
+                row,
+                text=_ellipsize(back_path.name, FRONT_NAME_WIDTH),
+                width=FRONT_NAME_WIDTH + 1,
+                anchor="w",
             )
             name_lbl.pack(side=tk.LEFT, padx=(4, 8))
             _ImageTooltip(name_lbl, back_path)
 
-            crop_var = tk.BooleanVar(value=self.local_back_crop[i])
+            crop_var = tk.BooleanVar(value=self.state.local_back_crop[i])
             ttk.Checkbutton(
-                row, text="Recortar bordes extra", variable=crop_var,
+                row,
+                text="Recortar bordes extra",
+                variable=crop_var,
                 command=lambda idx=i, v=crop_var: self._on_back_crop_change(idx, v),
             ).pack(side=tk.LEFT, padx=(4, 6))
 
             ttk.Button(
-                row, text="✕", width=2,
+                row,
+                text="✕",
+                width=2,
                 command=lambda idx=i: self._remove_back(idx),
             ).pack(side=tk.RIGHT)
             ttk.Button(
-                row, text="▼", width=2,
+                row,
+                text="▼",
+                width=2,
                 command=lambda idx=i: self._move_back_down(idx),
             ).pack(side=tk.RIGHT, padx=(0, 1))
             ttk.Button(
-                row, text="▲", width=2,
+                row,
+                text="▲",
+                width=2,
                 command=lambda idx=i: self._move_back_up(idx),
             ).pack(side=tk.RIGHT, padx=(0, 1))
 
@@ -1338,33 +1450,33 @@ class App:
             title="Selecciona imágenes locales (frontales)",
             filetypes=IMAGE_FILETYPES,
         )
-        default_back = self.local_backs[0] if self.local_backs else None
+        default_back = self.state.local_backs[0] if self.state.local_backs else None
         added = False
         for p in paths:
             pp = Path(p)
-            if pp not in self.local_fronts:
-                self.local_fronts.append(pp)
-                self.front_back_paths.append(default_back)
-                self.local_front_crop.append(False)
+            if pp not in self.state.local_fronts:
+                self.state.local_fronts.append(pp)
+                self.state.front_back_paths.append(default_back)
+                self.state.local_front_crop.append(False)
                 added = True
         if added:
             self._refresh_front_rows()
             self._refresh_generate_state()
 
     def _clear_local_fronts(self) -> None:
-        if not self.local_fronts:
+        if not self.state.local_fronts:
             return
-        self.local_fronts.clear()
-        self.front_back_paths.clear()
-        self.local_front_crop.clear()
+        self.state.local_fronts.clear()
+        self.state.front_back_paths.clear()
+        self.state.local_front_crop.clear()
         self._refresh_front_rows()
         self._refresh_generate_state()
 
     def _remove_front(self, idx: int) -> None:
-        if 0 <= idx < len(self.local_fronts):
-            del self.local_fronts[idx]
-            del self.front_back_paths[idx]
-            del self.local_front_crop[idx]
+        if 0 <= idx < len(self.state.local_fronts):
+            del self.state.local_fronts[idx]
+            del self.state.front_back_paths[idx]
+            del self.state.local_front_crop[idx]
             self._refresh_front_rows()
             self._refresh_generate_state()
 
@@ -1374,53 +1486,54 @@ class App:
         try:
             n = int(choice)
         except (TypeError, ValueError):
-            self.front_back_paths[idx] = None  # "—" = no explicit choice
+            self.state.front_back_paths[idx] = None  # "—" = no explicit choice
             return
-        if 1 <= n <= len(self.local_backs):
-            self.front_back_paths[idx] = self.local_backs[n - 1]
+        if 1 <= n <= len(self.state.local_backs):
+            self.state.front_back_paths[idx] = self.state.local_backs[n - 1]
 
     def _on_front_crop_change(self, idx: int, var: tk.BooleanVar) -> None:
-        if 0 <= idx < len(self.local_front_crop):
-            self.local_front_crop[idx] = bool(var.get())
+        if 0 <= idx < len(self.state.local_front_crop):
+            self.state.local_front_crop[idx] = bool(var.get())
 
     def _on_front_crop_all(self) -> None:
         val = bool(self._front_crop_all.get())
-        for i in range(len(self.local_front_crop)):
-            self.local_front_crop[i] = val
+        for i in range(len(self.state.local_front_crop)):
+            self.state.local_front_crop[i] = val
         self._refresh_front_rows()
 
     def _on_back_crop_all(self) -> None:
         val = bool(self._back_crop_all.get())
-        for i in range(len(self.local_back_crop)):
-            self.local_back_crop[i] = val
+        for i in range(len(self.state.local_back_crop)):
+            self.state.local_back_crop[i] = val
         self._refresh_back_rows()
 
     def _refresh_front_rows(self) -> None:
         """Tear down and rebuild the per-front rows so indices/combos stay in
-        sync with `self.local_fronts` and `self.local_backs`."""
+        sync with `self.state.local_fronts` and `self.state.local_backs`."""
         for row in self._front_rows:
             row["frame"].destroy()
         self._front_rows.clear()
 
-        if not self.local_fronts:
+        if not self.state.local_fronts:
             self._fronts_empty_label.pack(anchor="w")
             self._fronts_header_var.set("Frontales (asignar trasera por carta):")
             return
         self._fronts_empty_label.pack_forget()
 
-        numbered = [str(i) for i in range(1, len(self.local_backs) + 1)]
+        numbered = [str(i) for i in range(1, len(self.state.local_backs) + 1)]
         combo_values = ["—", *numbered]
         backs_present = bool(numbered)
 
-        for i, front_path in enumerate(self.local_fronts):
+        for i, front_path in enumerate(self.state.local_fronts):
             row = ttk.Frame(self.fronts_inner)
             row.pack(fill=tk.X, pady=1, padx=2)
 
-            ttk.Label(row, text=f"{i + 1:>3}.", width=4,
-                      anchor="e").pack(side=tk.LEFT)
+            ttk.Label(row, text=f"{i + 1:>3}.", width=4, anchor="e").pack(side=tk.LEFT)
             front_name_lbl = ttk.Label(
-                row, text=_ellipsize(front_path.name, FRONT_NAME_WIDTH),
-                width=FRONT_NAME_WIDTH + 1, anchor="w",
+                row,
+                text=_ellipsize(front_path.name, FRONT_NAME_WIDTH),
+                width=FRONT_NAME_WIDTH + 1,
+                anchor="w",
             )
             front_name_lbl.pack(side=tk.LEFT, padx=(4, 8))
             _ImageTooltip(front_name_lbl, front_path)
@@ -1429,17 +1542,19 @@ class App:
 
             # If a previously picked back is no longer in the list, drop the
             # assignment so the combo shows "—" (use XML cardback fallback).
-            assigned = self.front_back_paths[i]
-            if assigned is not None and assigned not in self.local_backs:
+            assigned = self.state.front_back_paths[i]
+            if assigned is not None and assigned not in self.state.local_backs:
                 assigned = None
-                self.front_back_paths[i] = None
+                self.state.front_back_paths[i] = None
             var = tk.StringVar()
             if assigned is None:
                 var.set("—")
             else:
-                var.set(str(self.local_backs.index(assigned) + 1))
+                var.set(str(self.state.local_backs.index(assigned) + 1))
             combo = ttk.Combobox(
-                row, values=combo_values, textvariable=var,
+                row,
+                values=combo_values,
+                textvariable=var,
                 state="readonly" if backs_present else "disabled",
                 width=4,
             )
@@ -1449,22 +1564,30 @@ class App:
             )
             combo.pack(side=tk.LEFT, padx=(4, 6))
 
-            crop_var = tk.BooleanVar(value=self.local_front_crop[i])
+            crop_var = tk.BooleanVar(value=self.state.local_front_crop[i])
             ttk.Checkbutton(
-                row, text="Recortar bordes extra", variable=crop_var,
+                row,
+                text="Recortar bordes extra",
+                variable=crop_var,
                 command=lambda idx=i, v=crop_var: self._on_front_crop_change(idx, v),
             ).pack(side=tk.LEFT, padx=(4, 6))
 
             ttk.Button(
-                row, text="✕", width=2,
+                row,
+                text="✕",
+                width=2,
                 command=lambda idx=i: self._remove_front(idx),
             ).pack(side=tk.RIGHT)
             ttk.Button(
-                row, text="▼", width=2,
+                row,
+                text="▼",
+                width=2,
                 command=lambda idx=i: self._move_front_down(idx),
             ).pack(side=tk.RIGHT, padx=(0, 1))
             ttk.Button(
-                row, text="▲", width=2,
+                row,
+                text="▲",
+                width=2,
                 command=lambda idx=i: self._move_front_up(idx),
             ).pack(side=tk.RIGHT, padx=(0, 1))
 
@@ -1476,7 +1599,7 @@ class App:
         self.fronts_inner.update_idletasks()
         self.fronts_canvas.configure(scrollregion=self.fronts_canvas.bbox("all"))
 
-        total = len(self.local_fronts)
+        total = len(self.state.local_fronts)
         self._fronts_header_var.set(
             f"Frontales (asignar trasera por carta):   Actualmente: {total} cartas"
         )
@@ -1487,40 +1610,76 @@ class App:
     # ------------------------------------------------------------------
     def _move_xml_up(self, idx: int) -> None:
         if idx > 0:
-            self.xml_paths[idx], self.xml_paths[idx - 1] = self.xml_paths[idx - 1], self.xml_paths[idx]
+            self.state.xml_paths[idx], self.state.xml_paths[idx - 1] = (
+                self.state.xml_paths[idx - 1],
+                self.state.xml_paths[idx],
+            )
             self._refresh_xml_rows()
 
     def _move_xml_down(self, idx: int) -> None:
-        if idx < len(self.xml_paths) - 1:
-            self.xml_paths[idx], self.xml_paths[idx + 1] = self.xml_paths[idx + 1], self.xml_paths[idx]
+        if idx < len(self.state.xml_paths) - 1:
+            self.state.xml_paths[idx], self.state.xml_paths[idx + 1] = (
+                self.state.xml_paths[idx + 1],
+                self.state.xml_paths[idx],
+            )
             self._refresh_xml_rows()
 
     def _move_back_up(self, idx: int) -> None:
         if idx > 0:
-            self.local_backs[idx], self.local_backs[idx - 1] = self.local_backs[idx - 1], self.local_backs[idx]
-            self.local_back_crop[idx], self.local_back_crop[idx - 1] = self.local_back_crop[idx - 1], self.local_back_crop[idx]
+            self.state.local_backs[idx], self.state.local_backs[idx - 1] = (
+                self.state.local_backs[idx - 1],
+                self.state.local_backs[idx],
+            )
+            self.state.local_back_crop[idx], self.state.local_back_crop[idx - 1] = (
+                self.state.local_back_crop[idx - 1],
+                self.state.local_back_crop[idx],
+            )
             self._refresh_back_rows()
             self._refresh_front_rows()
 
     def _move_back_down(self, idx: int) -> None:
-        if idx < len(self.local_backs) - 1:
-            self.local_backs[idx], self.local_backs[idx + 1] = self.local_backs[idx + 1], self.local_backs[idx]
-            self.local_back_crop[idx], self.local_back_crop[idx + 1] = self.local_back_crop[idx + 1], self.local_back_crop[idx]
+        if idx < len(self.state.local_backs) - 1:
+            self.state.local_backs[idx], self.state.local_backs[idx + 1] = (
+                self.state.local_backs[idx + 1],
+                self.state.local_backs[idx],
+            )
+            self.state.local_back_crop[idx], self.state.local_back_crop[idx + 1] = (
+                self.state.local_back_crop[idx + 1],
+                self.state.local_back_crop[idx],
+            )
             self._refresh_back_rows()
             self._refresh_front_rows()
 
     def _move_front_up(self, idx: int) -> None:
         if idx > 0:
-            self.local_fronts[idx], self.local_fronts[idx - 1] = self.local_fronts[idx - 1], self.local_fronts[idx]
-            self.front_back_paths[idx], self.front_back_paths[idx - 1] = self.front_back_paths[idx - 1], self.front_back_paths[idx]
-            self.local_front_crop[idx], self.local_front_crop[idx - 1] = self.local_front_crop[idx - 1], self.local_front_crop[idx]
+            self.state.local_fronts[idx], self.state.local_fronts[idx - 1] = (
+                self.state.local_fronts[idx - 1],
+                self.state.local_fronts[idx],
+            )
+            self.state.front_back_paths[idx], self.state.front_back_paths[idx - 1] = (
+                self.state.front_back_paths[idx - 1],
+                self.state.front_back_paths[idx],
+            )
+            self.state.local_front_crop[idx], self.state.local_front_crop[idx - 1] = (
+                self.state.local_front_crop[idx - 1],
+                self.state.local_front_crop[idx],
+            )
             self._refresh_front_rows()
 
     def _move_front_down(self, idx: int) -> None:
-        if idx < len(self.local_fronts) - 1:
-            self.local_fronts[idx], self.local_fronts[idx + 1] = self.local_fronts[idx + 1], self.local_fronts[idx]
-            self.front_back_paths[idx], self.front_back_paths[idx + 1] = self.front_back_paths[idx + 1], self.front_back_paths[idx]
-            self.local_front_crop[idx], self.local_front_crop[idx + 1] = self.local_front_crop[idx + 1], self.local_front_crop[idx]
+        if idx < len(self.state.local_fronts) - 1:
+            self.state.local_fronts[idx], self.state.local_fronts[idx + 1] = (
+                self.state.local_fronts[idx + 1],
+                self.state.local_fronts[idx],
+            )
+            self.state.front_back_paths[idx], self.state.front_back_paths[idx + 1] = (
+                self.state.front_back_paths[idx + 1],
+                self.state.front_back_paths[idx],
+            )
+            self.state.local_front_crop[idx], self.state.local_front_crop[idx + 1] = (
+                self.state.local_front_crop[idx + 1],
+                self.state.local_front_crop[idx],
+            )
             self._refresh_front_rows()
 
     # ------------------------------------------------------------------
@@ -1544,8 +1703,8 @@ class App:
         for pp in paths:
             if pp.suffix.lower() != ".xml":
                 continue
-            if pp not in self.xml_paths:
-                self.xml_paths.append(pp)
+            if pp not in self.state.xml_paths:
+                self.state.xml_paths.append(pp)
                 added += 1
                 if pp not in self._xml_card_counts:
                     try:
@@ -1566,43 +1725,41 @@ class App:
                         self._xml_validations[pp] = []
         if added:
             self._refresh_xml_rows()
-            self.status_var.set(f"{len(self.xml_paths)} XML(s) en cola.")
+            self.status_var.set(f"{len(self.state.xml_paths)} XML(s) en cola.")
         self._refresh_generate_state()
 
     def _on_drop_backs(self, files) -> None:
         paths = self._decode_drop(files)
-        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-        was_empty = not self.local_backs
+        was_empty = not self.state.local_backs
         added = False
         for pp in paths:
-            if pp.suffix.lower() not in _IMAGE_EXTS:
+            if pp.suffix.lower() not in SUPPORTED_IMAGE_EXTS:
                 continue
-            if pp not in self.local_backs:
-                self.local_backs.append(pp)
-                self.local_back_crop.append(False)
+            if pp not in self.state.local_backs:
+                self.state.local_backs.append(pp)
+                self.state.local_back_crop.append(False)
                 added = True
         if added:
-            if was_empty and self.local_backs:
-                first = self.local_backs[0]
-                for i, assigned in enumerate(self.front_back_paths):
+            if was_empty and self.state.local_backs:
+                first = self.state.local_backs[0]
+                for i, assigned in enumerate(self.state.front_back_paths):
                     if assigned is None:
-                        self.front_back_paths[i] = first
+                        self.state.front_back_paths[i] = first
             self._refresh_back_rows()
             self._refresh_front_rows()
             self._refresh_generate_state()
 
     def _on_drop_fronts(self, files) -> None:
         paths = self._decode_drop(files)
-        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-        default_back = self.local_backs[0] if self.local_backs else None
+        default_back = self.state.local_backs[0] if self.state.local_backs else None
         added = False
         for pp in paths:
-            if pp.suffix.lower() not in _IMAGE_EXTS:
+            if pp.suffix.lower() not in SUPPORTED_IMAGE_EXTS:
                 continue
-            if pp not in self.local_fronts:
-                self.local_fronts.append(pp)
-                self.front_back_paths.append(default_back)
-                self.local_front_crop.append(False)
+            if pp not in self.state.local_fronts:
+                self.state.local_fronts.append(pp)
+                self.state.front_back_paths.append(default_back)
+                self.state.local_front_crop.append(False)
                 added = True
         if added:
             self._refresh_front_rows()
@@ -1669,7 +1826,12 @@ class App:
             widget.destroy()
         self._preflight_labels.clear()
 
-        if not self.xml_paths and not self.local_fronts and not self._op_decks and not self._rb_decks:
+        if (
+            not self.state.xml_paths
+            and not self.state.local_fronts
+            and not self._op_decks
+            and not self._rb_decks
+        ):
             self._preflight_frame.pack_forget()
             return
 
@@ -1689,44 +1851,52 @@ class App:
 
         xml_total = 0
 
-        for p in self.xml_paths:
+        for p in self.state.xml_paths:
             order = self._xml_orders.get(p)
             if order is None:
                 _row([(f"• {p.name}: (no se pudo leer)", "normal")])
                 continue
             n = sum(len(card.slots) for card in order.fronts)
             xml_total += n
-            _row([
-                (f"• {p.name}: ", "normal"),
-                (f"{n}", "bold"),
-                (" cartas", "normal"),
-            ])
+            _row(
+                [
+                    (f"• {p.name}: ", "normal"),
+                    (f"{n}", "bold"),
+                    (" cartas", "normal"),
+                ]
+            )
 
         for deck in self._op_decks:
             n = deck.total_slots
             xml_total += n
-            _row([
-                (f"• One Piece – {_ellipsize(deck.name, 22)}: ", "normal"),
-                (f"{n}", "bold"),
-                (" cartas", "normal"),
-            ])
+            _row(
+                [
+                    (f"• One Piece – {_ellipsize(deck.name, 22)}: ", "normal"),
+                    (f"{n}", "bold"),
+                    (" cartas", "normal"),
+                ]
+            )
 
         for deck in self._rb_decks:
             n = deck.total_slots
             xml_total += n
-            _row([
-                (f"• Riftbound – {_ellipsize(deck.name, 22)}: ", "normal"),
-                (f"{n}", "bold"),
-                (" cartas", "normal"),
-            ])
+            _row(
+                [
+                    (f"• Riftbound – {_ellipsize(deck.name, 22)}: ", "normal"),
+                    (f"{n}", "bold"),
+                    (" cartas", "normal"),
+                ]
+            )
 
-        local_count = len(self.local_fronts)
+        local_count = len(self.state.local_fronts)
         if local_count:
-            _row([
-                ("• Locales: ", "normal"),
-                (f"{local_count}", "bold"),
-                (" carta(s)", "normal"),
-            ])
+            _row(
+                [
+                    ("• Locales: ", "normal"),
+                    (f"{local_count}", "bold"),
+                    (" carta(s)", "normal"),
+                ]
+            )
 
         total_cards = xml_total + local_count
         if total_cards:
@@ -1739,26 +1909,30 @@ class App:
             cache_str = f" · {cached} imagen(es) en caché" if cached else ""
 
             if blanks:
-                _row([
-                    ("Total: ", "normal"),
-                    (f"{total_cards}", "bold"),
-                    (f" cartas · {pairs} par(es) de páginas{cache_str} · ", "normal"),
-                    (f"⚠ {blanks} huecos en la última página", "warn"),
-                ])
+                _row(
+                    [
+                        ("Total: ", "normal"),
+                        (f"{total_cards}", "bold"),
+                        (f" cartas · {pairs} par(es) de páginas{cache_str} · ", "normal"),
+                        (f"⚠ {blanks} huecos en la última página", "warn"),
+                    ]
+                )
             else:
-                _row([
-                    ("Total: ", "normal"),
-                    (f"{total_cards}", "bold"),
-                    (f" cartas · {pairs} par(es) de páginas{cache_str}", "normal"),
-                ])
+                _row(
+                    [
+                        ("Total: ", "normal"),
+                        (f"{total_cards}", "bold"),
+                        (f" cartas · {pairs} par(es) de páginas{cache_str}", "normal"),
+                    ]
+                )
 
         self._preflight_frame.pack(fill=tk.X, pady=(8, 0))
 
     def _refresh_generate_state(self) -> None:
         ready = False
-        if self.xml_paths:
+        if self.state.xml_paths:
             ready = True
-        elif self.local_fronts and self.local_backs:
+        elif self.state.local_fronts and self.state.local_backs:
             ready = True
         elif self._op_decks:
             ready = True
@@ -1777,11 +1951,9 @@ class App:
         `None` to fall back to the XML cardback (or `local_cardback` in
         locals-only mode)."""
         result: list[Path | None] = []
-        for i, _ in enumerate(self.local_fronts):
+        for i, _ in enumerate(self.state.local_fronts):
             assigned = (
-                self.front_back_paths[i]
-                if i < len(self.front_back_paths)
-                else None
+                self.state.front_back_paths[i] if i < len(self.state.front_back_paths) else None
             )
             result.append(assigned)
         return result
@@ -1791,9 +1963,9 @@ class App:
         as both a front and a back gets the front's setting last (overrides
         the back's), which is fine — they map to the same on-disk file."""
         m: dict[Path, bool] = {}
-        for p, c in zip(self.local_backs, self.local_back_crop):
+        for p, c in zip(self.state.local_backs, self.state.local_back_crop):
             m[p] = c
-        for p, c in zip(self.local_fronts, self.local_front_crop):
+        for p, c in zip(self.state.local_fronts, self.state.local_front_crop):
             m[p] = c
         return m
 
@@ -1801,15 +1973,19 @@ class App:
         if self.running:
             return
 
-        if (not self.xml_paths and not self.local_fronts
-                and not self._op_decks and not self._rb_decks):
+        if (
+            not self.state.xml_paths
+            and not self.state.local_fronts
+            and not self._op_decks
+            and not self._rb_decks
+        ):
             messagebox.showerror(
                 APP_TITLE,
                 "Selecciona al menos un XML, imágenes locales, o un mazo de One Piece o Riftbound.",
             )
             return
 
-        if not self.xml_paths and self.local_fronts and not self.local_backs:
+        if not self.state.xml_paths and self.state.local_fronts and not self.state.local_backs:
             messagebox.showerror(
                 APP_TITLE,
                 "Sin XMLs se necesita al menos un back local "
@@ -1819,19 +1995,17 @@ class App:
 
         reports = []
         plan_ = None
-        if self.xml_paths:
+        if self.state.xml_paths:
             # Show a single confirmation if any XML has validation warnings.
             all_xml_warnings = [
-                (p, ws)
-                for p in self.xml_paths
-                if (ws := self._xml_validations.get(p))
+                (p, ws) for p in self.state.xml_paths if (ws := self._xml_validations.get(p))
             ]
             if all_xml_warnings:
                 lines = []
                 for p, ws in all_xml_warnings:
                     for w in ws:
                         lines.append(f"[{p.name}] {w.message}")
-                preview = "\n".join(f"• {l}" for l in lines[:10])
+                preview = "\n".join(f"• {line}" for line in lines[:10])
                 more = f"\n… y {len(lines) - 10} más" if len(lines) > 10 else ""
                 if not messagebox.askyesno(
                     APP_TITLE,
@@ -1842,12 +2016,12 @@ class App:
                     return
 
             try:
-                reports = analyze(self.xml_paths)
+                reports = analyze(self.state.xml_paths)
             except Exception as e:
                 self._show_error_dialog(f"No se pudo analizar el XML:\n{e}")
                 return
 
-            plan_ = plan(reports, local_count=len(self.local_fronts))
+            plan_ = plan(reports, local_count=len(self.state.local_fronts))
 
             merge_info = format_merge_info(plan_)
             if merge_info:
@@ -1856,7 +2030,7 @@ class App:
             if format_warning(plan_):
                 combined_total = (
                     sum(r.cards for r in reports)
-                    + len(self.local_fronts)
+                    + len(self.state.local_fronts)
                     + sum(d.total_slots for d in self._op_decks)
                     + sum(d.total_slots for d in self._rb_decks)
                 )
@@ -1878,7 +2052,7 @@ class App:
         else:
             # No XML: warn if total (local + OP + RB) is not a multiple of 9
             total = (
-                len(self.local_fronts)
+                len(self.state.local_fronts)
                 + sum(d.total_slots for d in self._op_decks)
                 + sum(d.total_slots for d in self._rb_decks)
             )
@@ -1907,7 +2081,9 @@ class App:
         self.status_var.set("Preparando…")
         self._reset_xml_download_progress()
         self.worker = threading.Thread(
-            target=self._work, args=(plan_, reports, fronts_only), daemon=True,
+            target=self._work,
+            args=(plan_, reports, fronts_only),
+            daemon=True,
         )
         self.worker.start()
 
@@ -1923,14 +2099,14 @@ class App:
         self.progress["value"] = 0
         self.status_var.set("Preparando One Piece…")
         self.worker = threading.Thread(
-            target=self._work_op, args=(fronts_only,), daemon=True,
+            target=self._work_op,
+            args=(fronts_only,),
+            daemon=True,
         )
         self.worker.start()
 
     def _start_rb(self, fronts_only: bool = False) -> None:
-        print_runes_flags = [
-            row["print_runes_var"].get() for row in self._rb_deck_rows
-        ]
+        print_runes_flags = [row["print_runes_var"].get() for row in self._rb_deck_rows]
         self.running = True
         self.cancel_event.clear()
         self._dl_speed_str = ""
@@ -1942,11 +2118,15 @@ class App:
         self.progress["value"] = 0
         self.status_var.set("Preparando Riftbound…")
         self.worker = threading.Thread(
-            target=self._work_rb, args=(fronts_only, print_runes_flags), daemon=True,
+            target=self._work_rb,
+            args=(fronts_only, print_runes_flags),
+            daemon=True,
         )
         self.worker.start()
 
-    def _work_rb(self, fronts_only: bool = False, print_runes_flags: list[bool] | None = None) -> None:
+    def _work_rb(
+        self, fronts_only: bool = False, print_runes_flags: list[bool] | None = None
+    ) -> None:
         run_dir = None
         try:
             decks = self._rb_decks
@@ -1975,7 +2155,8 @@ class App:
                     self.events.put(("progress", "download", _off + done, total_unique, label))
 
                 partial = rb_download(
-                    deck, rb_raw_dir,
+                    deck,
+                    rb_raw_dir,
                     cancel_event=self.cancel_event,
                     progress_cb=_dl_progress,
                 )
@@ -1991,7 +2172,11 @@ class App:
             all_fronts: list[Path] = []
             all_backs: list[Path | None] = []
             for idx, deck in enumerate(decks):
-                include_runes = print_runes_flags[idx] if print_runes_flags and idx < len(print_runes_flags) else True
+                include_runes = (
+                    print_runes_flags[idx]
+                    if print_runes_flags and idx < len(print_runes_flags)
+                    else True
+                )
                 fronts, per_backs = rb_expand(deck, image_map, backs, include_runes=include_runes)
                 all_fronts.extend(fronts)
                 all_backs.extend(per_backs)
@@ -2018,8 +2203,12 @@ class App:
                 self.events.put(("progress", stage, done, total, label))
 
             pdfs = run_locals_only(
-                all_fronts, default_back,
-                run_dir, base_name, wd, cb,
+                all_fronts,
+                default_back,
+                run_dir,
+                base_name,
+                wd,
+                cb,
                 cancel_event=self.cancel_event,
                 extra_backs=all_backs,
                 local_crop_map=crop_map,
@@ -2033,7 +2222,9 @@ class App:
             for stage in ("download", "crop", "pdf"):
                 if stage in _phase_first and stage in _phase_done:
                     dur = _phase_done[stage] - _phase_first[stage]
-                    lbl = {"download": "Descarga", "crop": "Recorte", "pdf": "PDF"}.get(stage, stage)
+                    lbl = {"download": "Descarga", "crop": "Recorte", "pdf": "PDF"}.get(
+                        stage, stage
+                    )
                     timing_parts.append(f"{lbl}: {_fmt_dur(dur)}")
             total_dur = time.time() - _run_start
             timing_str = "  ".join(timing_parts)
@@ -2078,7 +2269,8 @@ class App:
                     self.events.put(("progress", "download", _off + done, total_unique, label))
 
                 partial = op_download(
-                    deck, op_raw_dir,
+                    deck,
+                    op_raw_dir,
                     cancel_event=self.cancel_event,
                     progress_cb=_dl_progress,
                 )
@@ -2130,8 +2322,12 @@ class App:
                 self.events.put(("progress", stage, done, total, label))
 
             pdfs = run_locals_only(
-                all_fronts, standard_back,
-                run_dir, base_name, wd, cb,
+                all_fronts,
+                standard_back,
+                run_dir,
+                base_name,
+                wd,
+                cb,
                 cancel_event=self.cancel_event,
                 extra_backs=all_backs,
                 local_crop_map=crop_map,
@@ -2145,7 +2341,9 @@ class App:
             for stage in ("download", "crop", "pdf"):
                 if stage in _phase_first and stage in _phase_done:
                     dur = _phase_done[stage] - _phase_first[stage]
-                    lbl = {"download": "Descarga", "crop": "Recorte", "pdf": "PDF"}.get(stage, stage)
+                    lbl = {"download": "Descarga", "crop": "Recorte", "pdf": "PDF"}.get(
+                        stage, stage
+                    )
                     timing_parts.append(f"{lbl}: {_fmt_dur(dur)}")
             total_dur = time.time() - _run_start
             timing_str = "  ".join(timing_parts)
@@ -2212,15 +2410,23 @@ class App:
                 op_raw_dir = wd / "op_raw"
                 op_label = " + ".join(d.name for d in self._op_decks)
                 op_total_unique = sum(len({c.card_id for c in d.cards}) for d in self._op_decks)
-                self.events.put(("progress", "download", 0, op_total_unique, f"One Piece – {op_label}"))
+                self.events.put(
+                    ("progress", "download", 0, op_total_unique, f"One Piece – {op_label}")
+                )
                 image_map_op: dict[str, Path] = {}
                 done_dl_op = 0
                 for deck in self._op_decks:
                     _off_op = done_dl_op
+
                     def _op_prog(done, total, _o=_off_op, _t=op_total_unique, _lbl=op_label):
                         _track("download", _o + done, _t)
-                        self.events.put(("progress", "download", _o + done, _t, f"One Piece – {_lbl}"))
-                    part = op_download(deck, op_raw_dir, cancel_event=self.cancel_event, progress_cb=_op_prog)
+                        self.events.put(
+                            ("progress", "download", _o + done, _t, f"One Piece – {_lbl}")
+                        )
+
+                    part = op_download(
+                        deck, op_raw_dir, cancel_event=self.cancel_event, progress_cb=_op_prog
+                    )
                     image_map_op.update(part)
                     done_dl_op += len({c.card_id for c in deck.cards})
                     if self.cancel_event.is_set():
@@ -2249,15 +2455,23 @@ class App:
                 rb_raw_dir = wd / "rb_raw"
                 rb_label = " + ".join(d.name for d in self._rb_decks)
                 rb_total_unique = sum(len({c.variant_id for c in d.cards}) for d in self._rb_decks)
-                self.events.put(("progress", "download", 0, rb_total_unique, f"Riftbound – {rb_label}"))
+                self.events.put(
+                    ("progress", "download", 0, rb_total_unique, f"Riftbound – {rb_label}")
+                )
                 image_map_rb: dict[str, Path] = {}
                 done_dl_rb = 0
                 for deck in self._rb_decks:
                     _off_rb = done_dl_rb
+
                     def _rb_prog(done, total, _o=_off_rb, _t=rb_total_unique, _lbl=rb_label):
                         _track("download", _o + done, _t)
-                        self.events.put(("progress", "download", _o + done, _t, f"Riftbound – {_lbl}"))
-                    part = rb_download(deck, rb_raw_dir, cancel_event=self.cancel_event, progress_cb=_rb_prog)
+                        self.events.put(
+                            ("progress", "download", _o + done, _t, f"Riftbound – {_lbl}")
+                        )
+
+                    part = rb_download(
+                        deck, rb_raw_dir, cancel_event=self.cancel_event, progress_cb=_rb_prog
+                    )
                     image_map_rb.update(part)
                     done_dl_rb += len({c.variant_id for c in deck.cards})
                     if self.cancel_event.is_set():
@@ -2269,14 +2483,18 @@ class App:
                 print_runes_flags = [row["print_runes_var"].get() for row in self._rb_deck_rows]
                 for idx, deck in enumerate(self._rb_decks):
                     include_runes = print_runes_flags[idx] if idx < len(print_runes_flags) else True
-                    fronts_rb, backs_rb = rb_expand(deck, image_map_rb, rb_backs_map, include_runes=include_runes)
+                    fronts_rb, backs_rb = rb_expand(
+                        deck, image_map_rb, rb_backs_map, include_runes=include_runes
+                    )
                     rb_fronts.extend(fronts_rb)
                     rb_backs_resolved.extend(rb_default_back if b is None else b for b in backs_rb)
                 rb_crop_extra = {p: False for p in set(rb_fronts) | rb_all_back_paths}
 
             # ---- Combine all extra fronts/backs/crop maps -------------------
-            all_extra_fronts = list(self.local_fronts) + op_fronts + rb_fronts
-            all_extra_backs: list[Path | None] = list(extra_backs) + op_backs_resolved + rb_backs_resolved
+            all_extra_fronts = list(self.state.local_fronts) + op_fronts + rb_fronts
+            all_extra_backs: list[Path | None] = (
+                list(extra_backs) + op_backs_resolved + rb_backs_resolved
+            )
             all_crop_map = {**crop_map, **op_crop_extra, **rb_crop_extra}
 
             if plan_ is not None:
@@ -2285,15 +2503,18 @@ class App:
                 all_ids = collect_drive_ids(xml_paths_flat)
                 raw_dir = wd / "raw"
                 to_check = [
-                    (did, name) for did, name in all_ids
-                    if not list(raw_dir.glob(f"{did}.*"))
+                    (did, name) for did, name in all_ids if not list(raw_dir.glob(f"{did}.*"))
                 ]
                 if to_check:
-                    self.events.put(("progress", "verify", 0, len(to_check), "XML seleccionados"))
+                    self.events.put(
+                        ("progress", Stage.VERIFY, 0, len(to_check), "XML seleccionados")
+                    )
 
                     def _verify_cb(done, total):
-                        _track("verify", done, total)
-                        self.events.put(("progress", "verify", done, total, "XML seleccionados"))
+                        _track(Stage.VERIFY, done, total)
+                        self.events.put(
+                            ("progress", Stage.VERIFY, done, total, "XML seleccionados")
+                        )
 
                     inaccessible = check_drive_access(to_check, _verify_cb)
 
@@ -2332,7 +2553,10 @@ class App:
                     self.events.put(("download_speed", speed_mbps, eta_sec))
 
                 pdfs = run_plan(
-                    plan_.jobs, run_dir, wd, cb,
+                    plan_.jobs,
+                    run_dir,
+                    wd,
+                    cb,
                     cancel_event=self.cancel_event,
                     extra_fronts=all_extra_fronts or None,
                     extra_backs=all_extra_backs or None,
@@ -2349,27 +2573,37 @@ class App:
                 # No XML: locals + OP + RB combined.
                 if not all_extra_fronts:
                     raise ValueError("No hay cartas para generar.")
-                if self.local_fronts and self.local_backs:
-                    default_back: Path = self.local_backs[0]
+                if self.state.local_fronts and self.state.local_backs:
+                    default_back: Path = self.state.local_backs[0]
                 elif op_standard_back is not None:
                     default_back = op_standard_back
                 elif rb_default_back is not None:
                     default_back = rb_default_back
                 else:
                     raise ValueError("No se encontró reverso por defecto.")
-                parts = [p for p in [
-                    "locales" if self.local_fronts else None,
-                    "One Piece" if op_fronts else None,
-                    "Riftbound" if rb_fronts else None,
-                ] if p]
+                parts = [
+                    p
+                    for p in [
+                        "locales" if self.state.local_fronts else None,
+                        "One Piece" if op_fronts else None,
+                        "Riftbound" if rb_fronts else None,
+                    ]
+                    if p
+                ]
                 base = "_".join(parts) if parts else "combinado"
                 self.events.put(("file", 1, 1, base))
+
                 def cb(stage, done, total, _label=base):
                     _track(stage, done, total)
                     self.events.put(("progress", stage, done, total, _label))
+
                 pdfs = run_locals_only(
-                    all_extra_fronts, default_back,
-                    run_dir, base, wd, cb,
+                    all_extra_fronts,
+                    default_back,
+                    run_dir,
+                    base,
+                    wd,
+                    cb,
                     cancel_event=self.cancel_event,
                     extra_backs=all_extra_backs,
                     local_crop_map=all_crop_map,
@@ -2386,11 +2620,15 @@ class App:
                 return f"{int(sec) // 60}m {int(sec) % 60}s" if sec >= 60 else f"{sec:.0f}s"
 
             timing_parts = []
-            for stage in ("verify", "download", "crop", "pdf"):
+            for stage in (Stage.VERIFY, Stage.DOWNLOAD, Stage.CROP, Stage.PDF):
                 if stage in _phase_first and stage in _phase_done:
                     dur = _phase_done[stage] - _phase_first[stage]
-                    label = {"verify": "Verif.", "download": "Descarga",
-                             "crop": "Recorte", "pdf": "PDF"}.get(stage, stage)
+                    label = {
+                        Stage.VERIFY: "Verif.",
+                        Stage.DOWNLOAD: "Descarga",
+                        Stage.CROP: "Recorte",
+                        Stage.PDF: "PDF",
+                    }.get(stage, stage)
                     timing_parts.append(f"{label}: {_fmt_dur(dur)}")
             total_dur = time.time() - _run_start
             timing_str = "  ".join(timing_parts)
@@ -2399,8 +2637,15 @@ class App:
 
             self.events.put(("done", generated, manifest, run_dir, timing_str))
         except DownloadPartialError as e:
-            self.events.put(("partial_download_error", e.permission_errors,
-                             e.timeout_errors, e.xml_context, run_dir))
+            self.events.put(
+                (
+                    "partial_download_error",
+                    e.permission_errors,
+                    e.timeout_errors,
+                    e.xml_context,
+                    run_dir,
+                )
+            )
         except DownloadRateLimitError:
             self.events.put(("rate_limit_error", run_dir))
         except DownloadPermissionError as e:
@@ -2519,7 +2764,9 @@ class App:
             if run_dir is not None:
                 self._cleanup_run_dir(run_dir)
             self.progress["value"] = 0
-            self.status_var.set("Proceso detenido. Las imágenes descargadas se conservan para retomar.")
+            self.status_var.set(
+                "Proceso detenido. Las imágenes descargadas se conservan para retomar."
+            )
             self._finish_running()
         elif kind == "rate_limit_error":
             _, run_dir = ev
@@ -2615,16 +2862,23 @@ class App:
         dlg.resizable(True, True)
         dlg.grab_set()
 
-        ttk.Label(dlg, text="Error", font=("Segoe UI", 11, "bold"),
-                  foreground="#cc0000").pack(anchor="w", padx=12, pady=(10, 4))
+        ttk.Label(dlg, text="Error", font=("Segoe UI", 11, "bold"), foreground="#cc0000").pack(
+            anchor="w", padx=12, pady=(10, 4)
+        )
 
         frame = ttk.Frame(dlg)
         frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
 
-        txt = tk.Text(frame, wrap=tk.WORD, relief=tk.SUNKEN, borderwidth=1,
-                      font=("Consolas", 9), state=tk.NORMAL)
+        txt = tk.Text(
+            frame,
+            wrap=tk.WORD,
+            relief=tk.SUNKEN,
+            borderwidth=1,
+            font=("Consolas", 9),
+            state=tk.NORMAL,
+        )
         sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=txt.yview)
         txt.configure(yscrollcommand=sb.set)
         txt.grid(row=0, column=0, sticky="nsew")
@@ -2658,6 +2912,7 @@ class App:
             os.startfile(str(path))  # Windows
         except AttributeError:
             import subprocess
+
             opener = "open" if os.uname().sysname == "Darwin" else "xdg-open"
             subprocess.Popen([opener, str(path)])
 

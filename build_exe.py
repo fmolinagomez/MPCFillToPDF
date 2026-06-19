@@ -35,6 +35,7 @@ from source so it has a unique hash that AV vendors don't yet flag:
 
 After that, run `python build_exe.py` as usual.
 """
+
 import json
 import os
 import shutil
@@ -45,9 +46,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "MPCFillToPDF"
 ENTRY = ROOT / "gui" / "main.py"
-ASSETS     = ROOT / "src" / "assets"
-ICONS      = ROOT / "icons"
-RESOURCES  = ROOT / "resources"
+ASSETS = ROOT / "src" / "assets"
+ICONS = ROOT / "icons"
+RESOURCES = ROOT / "resources"
 VERSION_FILE = ROOT / "version_file.txt"
 BUNDLED_KEY_PATH = ROOT / "src" / "_bundled_key.py"
 
@@ -107,8 +108,7 @@ def _remove_bundled_key() -> None:
 
 def main() -> None:
     if shutil.which("pyinstaller") is None:
-        print("pyinstaller not found. Install it with: pip install pyinstaller",
-              file=sys.stderr)
+        print("pyinstaller not found. Install it with: pip install pyinstaller", file=sys.stderr)
         sys.exit(1)
 
     _embed_api_key()
@@ -119,7 +119,8 @@ def main() -> None:
         "--clean",
         "--onefile",
         "--windowed",
-        "--name", APP_NAME,
+        "--name",
+        APP_NAME,
         f"--version-file={VERSION_FILE}",
         f"--add-data={ASSETS}{';' if sys.platform == 'win32' else ':'}src/assets",
         f"--add-data={ICONS}{';' if sys.platform == 'win32' else ':'}icons",
