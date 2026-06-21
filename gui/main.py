@@ -36,6 +36,10 @@ from src.downloader import (
     DownloadRateLimitError,
     DownloadTimeoutError,
 )
+from src.lorcana_scraper import LocanaDeck, get_lorcana_back
+from src.lorcana_scraper import download_images as lorcana_download
+from src.lorcana_scraper import expand_deck as lorcana_expand
+from src.lorcana_scraper import scrape_deck as lorcana_scrape_deck
 from src.op_scraper import OPDeck, get_op_backs, scrape_deck
 from src.op_scraper import download_images as op_download
 from src.op_scraper import expand_deck as op_expand
@@ -434,6 +438,10 @@ class App:
         self._rb_decks: list[RBDeck] = []
         self._rb_deck_rows: list[dict] = []
 
+        # Lorcana state
+        self._lorcana_decks: list[LocanaDeck] = []
+        self._lorcana_deck_rows: list[dict] = []
+
         self._build_ui()
         self.root.after(80, self._drain_events)
         self.root.after(200, self._setup_dnd)
@@ -532,6 +540,7 @@ class App:
         self._mtg_icon_img = _load_tab_icon("mtg_icon")
         self._op_icon_img = _load_tab_icon("op_icon")
         self._rb_icon_img = _load_tab_icon("riftbound_icon")
+        self._lorcana_icon_img = _load_tab_icon("lorcana_icon")
 
         magic_frame = ttk.Frame(notebook)
         magic_kw: dict = {"text": " Magic"}
@@ -556,6 +565,14 @@ class App:
             rb_kw["compound"] = "left"
         notebook.add(rb_frame, **rb_kw)
         self._build_riftbound_tab(rb_frame)
+
+        lorcana_frame = ttk.Frame(notebook)
+        lorcana_kw: dict = {"text": " Lorcana"}
+        if self._lorcana_icon_img:
+            lorcana_kw["image"] = self._lorcana_icon_img
+            lorcana_kw["compound"] = "left"
+        notebook.add(lorcana_frame, **lorcana_kw)
+        self._build_lorcana_tab(lorcana_frame)
 
     def _build_magic_tab(self, parent: ttk.Frame) -> None:
         self._xml_drop_frame = parent
@@ -1142,6 +1159,213 @@ class App:
         self._rb_status_var.set("")
         self._rb_load_btn.state(["!disabled"])
         self._rb_refresh_rows()
+        self._refresh_generate_state()
+
+    # ------------------------------------------------------------------
+    # Lorcana tab
+    # ------------------------------------------------------------------
+    def _build_lorcana_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        url_row = ttk.Frame(parent)
+        url_row.grid(row=0, column=0, sticky="ew", padx=6, pady=(10, 4))
+        url_row.columnconfigure(1, weight=1)
+        ttk.Label(url_row, text="URL del mazo:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self._lorcana_url_var = tk.StringVar()
+        self._lorcana_url_entry = ttk.Entry(url_row, textvariable=self._lorcana_url_var)
+        self._lorcana_url_entry.grid(row=0, column=1, sticky="ew")
+        self._lorcana_url_entry.bind("<Return>", lambda _e: self._lorcana_load_deck())
+        _attach_context_menu(self._lorcana_url_entry)
+        self._lorcana_load_btn = ttk.Button(
+            url_row, text="Añadir", width=7, command=self._lorcana_load_deck
+        )
+        self._lorcana_load_btn.grid(row=0, column=2, padx=(6, 0))
+
+        self._lorcana_status_var = tk.StringVar(value="")
+        ttk.Label(
+            url_row, textvariable=self._lorcana_status_var, foreground="#555", anchor="w"
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+
+        lorcana_list_frame = ttk.Frame(parent)
+        lorcana_list_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 2))
+        lorcana_list_frame.columnconfigure(0, weight=1)
+        lorcana_list_frame.rowconfigure(0, weight=1)
+
+        self._lorcana_canvas, self._lorcana_inner, _ = self._build_scrollable_rows(
+            lorcana_list_frame
+        )
+        self._lorcana_canvas.bind(
+            "<Enter>", lambda _e: self._bind_mousewheel(self._lorcana_canvas, True)
+        )
+        self._lorcana_canvas.bind(
+            "<Leave>", lambda _e: self._bind_mousewheel(self._lorcana_canvas, False)
+        )
+
+        self._lorcana_empty_label = ttk.Label(
+            self._lorcana_inner,
+            text="(introduce una URL de lorcana.gg, inkdecks.com o dreamborn.ink)",
+            foreground="#777",
+            padding=(8, 10),
+        )
+        self._lorcana_empty_label.pack(anchor="w")
+
+        lorcana_btn_row = ttk.Frame(parent)
+        lorcana_btn_row.grid(row=2, column=0, sticky="ew", padx=6, pady=(2, 6))
+        ttk.Button(lorcana_btn_row, text="Vaciar todo", command=self._lorcana_clear).pack(
+            side=tk.LEFT
+        )
+
+    def _lorcana_load_deck(self) -> None:
+        url = self._lorcana_url_var.get().strip()
+        if not url:
+            messagebox.showwarning(APP_TITLE, "Introduce una URL de mazo de Lorcana.")
+            return
+
+        self._lorcana_load_btn.state(["disabled"])
+        self._lorcana_status_var.set("Cargando mazo…")
+
+        def _fetch():
+            try:
+                deck = lorcana_scrape_deck(url)
+                self.events.put(("lorcana_deck_loaded", deck))
+            except Exception as e:
+                self.events.put(("lorcana_deck_error", str(e)))
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _lorcana_refresh_rows(self) -> None:
+        for row in self._lorcana_deck_rows:
+            row["outer"].destroy()
+        self._lorcana_deck_rows.clear()
+
+        if not self._lorcana_decks:
+            self._lorcana_empty_label.pack(anchor="w")
+            return
+        self._lorcana_empty_label.pack_forget()
+
+        for idx, deck in enumerate(self._lorcana_decks):
+            outer = ttk.Frame(self._lorcana_inner, relief="groove", borderwidth=1)
+            outer.pack(fill=tk.X, pady=3, padx=2)
+            outer.columnconfigure(0, weight=1)
+
+            summary = ttk.Frame(outer)
+            summary.pack(fill=tk.X, padx=6, pady=4)
+            summary.columnconfigure(1, weight=1)
+
+            ttk.Label(
+                summary,
+                text=_ellipsize(deck.name, 28),
+                font=("Segoe UI", 9, "bold"),
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=(0, 12))
+
+            source_labels = {
+                "lorcana_gg": "lorcana.gg",
+                "inkdecks": "inkdecks.com",
+                "dreamborn": "dreamborn.ink",
+            }
+            source_txt = source_labels.get(deck.source, deck.source)
+            ttk.Label(
+                summary,
+                text=source_txt,
+                foreground="#555",
+                anchor="w",
+                font=("Segoe UI", 8),
+            ).grid(row=0, column=1, sticky="w")
+
+            ttk.Label(
+                summary,
+                text=f"{deck.total_slots} cartas",
+                foreground="#888",
+                anchor="e",
+            ).grid(row=0, column=2, sticky="e", padx=(8, 6))
+
+            expanded_var = tk.BooleanVar(value=False)
+            toggle_btn = ttk.Button(
+                summary,
+                text="Detalles ▼",
+                width=10,
+                command=lambda i=idx: self._lorcana_toggle_details(i),
+            )
+            toggle_btn.grid(row=0, column=3, padx=(0, 4))
+
+            ttk.Button(
+                summary,
+                text="✕",
+                width=2,
+                command=lambda i=idx: self._lorcana_remove_deck(i),
+            ).grid(row=0, column=4)
+
+            detail = ttk.Frame(outer)
+
+            for card in deck.cards:
+                row_f = ttk.Frame(detail)
+                row_f.pack(fill=tk.X, pady=0, padx=(12, 4))
+                ttk.Label(
+                    row_f,
+                    text=f"x{card.quantity}",
+                    foreground="#444",
+                    font=("Segoe UI", 8),
+                    width=4,
+                    anchor="e",
+                ).pack(side=tk.LEFT, padx=(0, 6))
+                ttk.Label(
+                    row_f,
+                    text=_ellipsize(card.name, 30),
+                    anchor="w",
+                    width=31,
+                ).pack(side=tk.LEFT)
+                ttk.Label(
+                    row_f,
+                    text=card.card_id,
+                    foreground="#888",
+                    font=("Segoe UI", 8),
+                    anchor="w",
+                    width=10,
+                ).pack(side=tk.LEFT, padx=(4, 0))
+
+            self._lorcana_deck_rows.append(
+                {
+                    "outer": outer,
+                    "detail": detail,
+                    "toggle_btn": toggle_btn,
+                    "expanded": expanded_var,
+                    "deck": deck,
+                }
+            )
+
+        self._lorcana_inner.update_idletasks()
+        self._lorcana_canvas.configure(scrollregion=self._lorcana_canvas.bbox("all"))
+
+    def _lorcana_toggle_details(self, idx: int) -> None:
+        if idx >= len(self._lorcana_deck_rows):
+            return
+        row = self._lorcana_deck_rows[idx]
+        expanded = row["expanded"]
+        if expanded.get():
+            row["detail"].pack_forget()
+            row["toggle_btn"].configure(text="Detalles ▼")
+            expanded.set(False)
+        else:
+            row["detail"].pack(fill=tk.X, padx=0, pady=(0, 4))
+            row["toggle_btn"].configure(text="Detalles ▲")
+            expanded.set(True)
+        self._lorcana_inner.update_idletasks()
+        self._lorcana_canvas.configure(scrollregion=self._lorcana_canvas.bbox("all"))
+
+    def _lorcana_remove_deck(self, idx: int) -> None:
+        if 0 <= idx < len(self._lorcana_decks):
+            del self._lorcana_decks[idx]
+            self._lorcana_refresh_rows()
+            self._refresh_generate_state()
+
+    def _lorcana_clear(self) -> None:
+        self._lorcana_decks.clear()
+        self._lorcana_url_var.set("")
+        self._lorcana_status_var.set("")
+        self._lorcana_load_btn.state(["!disabled"])
+        self._lorcana_refresh_rows()
         self._refresh_generate_state()
 
     # ------------------------------------------------------------------
@@ -1830,6 +2054,7 @@ class App:
             and not self.state.local_fronts
             and not self._op_decks
             and not self._rb_decks
+            and not self._lorcana_decks
         ):
             self._preflight_frame.pack_forget()
             return
@@ -1887,6 +2112,17 @@ class App:
                 ]
             )
 
+        for deck in self._lorcana_decks:
+            n = deck.total_slots
+            xml_total += n
+            _row(
+                [
+                    (f"• Lorcana – {_ellipsize(deck.name, 22)}: ", "normal"),
+                    (f"{n}", "bold"),
+                    (" cartas", "normal"),
+                ]
+            )
+
         local_count = len(self.state.local_fronts)
         if local_count:
             _row(
@@ -1937,6 +2173,8 @@ class App:
             ready = True
         elif self._rb_decks:
             ready = True
+        elif self._lorcana_decks:
+            ready = True
         if ready and not self.running:
             self.soriano_btn.state(["!disabled"])
             self.fronts_only_btn.state(["!disabled"])
@@ -1977,10 +2215,12 @@ class App:
             and not self.state.local_fronts
             and not self._op_decks
             and not self._rb_decks
+            and not self._lorcana_decks
         ):
             messagebox.showerror(
                 APP_TITLE,
-                "Selecciona al menos un XML, imágenes locales, o un mazo de One Piece o Riftbound.",
+                "Selecciona al menos un XML, imágenes locales, o un mazo de "
+                "One Piece, Riftbound o Lorcana.",
             )
             return
 
@@ -2028,6 +2268,7 @@ class App:
                     + len(self.state.local_fronts)
                     + sum(d.total_slots for d in self._op_decks)
                     + sum(d.total_slots for d in self._rb_decks)
+                    + sum(d.total_slots for d in self._lorcana_decks)
                 )
                 combined_rem = combined_total % CARDS_PER_PAGE
                 if combined_rem != 0:
@@ -2045,11 +2286,12 @@ class App:
                     ):
                         return
         else:
-            # No XML: warn if total (local + OP + RB) is not a multiple of 9
+            # No XML: warn if total (local + OP + RB + Lorcana) is not a multiple of 9
             total = (
                 len(self.state.local_fronts)
                 + sum(d.total_slots for d in self._op_decks)
                 + sum(d.total_slots for d in self._rb_decks)
+                + sum(d.total_slots for d in self._lorcana_decks)
             )
             rem = total % CARDS_PER_PAGE
             if rem:
@@ -2485,12 +2727,69 @@ class App:
                     rb_backs_resolved.extend(rb_default_back if b is None else b for b in backs_rb)
                 rb_crop_extra = {p: False for p in set(rb_fronts) | rb_all_back_paths}
 
+            # ---- Download and prepare Lorcana deck images (if any) ----------
+            lorcana_fronts: list[Path] = []
+            lorcana_backs_resolved: list[Path | None] = []
+            lorcana_crop_extra: dict[Path, bool] = {}
+            lorcana_default_back: Path | None = None
+
+            if self._lorcana_decks:
+                lorcana_raw_dir = wd / "lorcana_raw"
+                lorcana_label = " + ".join(d.name for d in self._lorcana_decks)
+                lorcana_total_unique = sum(
+                    len({c.card_id for c in d.cards}) for d in self._lorcana_decks
+                )
+                self.events.put(
+                    (
+                        "progress",
+                        "download",
+                        0,
+                        lorcana_total_unique,
+                        f"Lorcana – {lorcana_label}",
+                    )
+                )
+                image_map_lorcana: dict[str, Path] = {}
+                done_dl_lorcana = 0
+                for deck in self._lorcana_decks:
+                    _off_lorcana = done_dl_lorcana
+
+                    def _lorcana_prog(
+                        done, total, _o=_off_lorcana, _t=lorcana_total_unique, _lbl=lorcana_label
+                    ):
+                        _track("download", _o + done, _t)
+                        self.events.put(
+                            ("progress", "download", _o + done, _t, f"Lorcana – {_lbl}")
+                        )
+
+                    part = lorcana_download(
+                        deck,
+                        lorcana_raw_dir,
+                        cancel_event=self.cancel_event,
+                        progress_cb=_lorcana_prog,
+                    )
+                    image_map_lorcana.update(part)
+                    done_dl_lorcana += len({c.card_id for c in deck.cards})
+                    if self.cancel_event.is_set():
+                        self.events.put(("cancelled", run_dir))
+                        return
+                lorcana_back = get_lorcana_back()
+                lorcana_default_back = lorcana_back
+                for deck in self._lorcana_decks:
+                    fronts_lorcana, backs_lorcana = lorcana_expand(deck, image_map_lorcana)
+                    lorcana_fronts.extend(fronts_lorcana)
+                    lorcana_backs_resolved.extend(
+                        lorcana_back if b is None else b for b in backs_lorcana
+                    )
+                lorcana_crop_extra = {p: False for p in set(lorcana_fronts) | {lorcana_back}}
+
             # ---- Combine all extra fronts/backs/crop maps -------------------
-            all_extra_fronts = list(self.state.local_fronts) + op_fronts + rb_fronts
-            all_extra_backs: list[Path | None] = (
-                list(extra_backs) + op_backs_resolved + rb_backs_resolved
+            all_extra_fronts = (
+                list(self.state.local_fronts) + op_fronts + rb_fronts + lorcana_fronts
             )
-            all_crop_map = {**crop_map, **op_crop_extra, **rb_crop_extra}
+            all_extra_backs: list[Path | None] = (
+                list(extra_backs) + op_backs_resolved + rb_backs_resolved + lorcana_backs_resolved
+            )
+            all_crop_map = {**crop_map, **op_crop_extra, **rb_crop_extra, **lorcana_crop_extra}
 
             if plan_ is not None:
                 # --- Verify Drive access before downloading ---------------
@@ -2574,6 +2873,8 @@ class App:
                     default_back = op_standard_back
                 elif rb_default_back is not None:
                     default_back = rb_default_back
+                elif lorcana_default_back is not None:
+                    default_back = lorcana_default_back
                 else:
                     raise ValueError("No se encontró reverso por defecto.")
                 parts = [
@@ -2582,6 +2883,7 @@ class App:
                         "locales" if self.state.local_fronts else None,
                         "One Piece" if op_fronts else None,
                         "Riftbound" if rb_fronts else None,
+                        "Lorcana" if lorcana_fronts else None,
                     ]
                     if p
                 ]
@@ -2654,7 +2956,7 @@ class App:
 
     @staticmethod
     def _cleanup_workdir(wd: Path) -> None:
-        for sub in ("raw", "bled"):
+        for sub in ("raw", "bled", "op_raw", "rb_raw", "lorcana_raw"):
             target = wd / sub
             if target.exists():
                 shutil.rmtree(target, ignore_errors=True)
@@ -2841,6 +3143,20 @@ class App:
             _, msg = ev
             self._rb_status_var.set("Error al cargar el mazo.")
             self._rb_load_btn.state(["!disabled"])
+            self._show_error_dialog(msg)
+        elif kind == "lorcana_deck_loaded":
+            _, deck = ev
+            if not any(d.deck_id == deck.deck_id for d in self._lorcana_decks):
+                self._lorcana_decks.append(deck)
+                self._lorcana_refresh_rows()
+                self._refresh_generate_state()
+            self._lorcana_url_var.set("")
+            self._lorcana_status_var.set(f"Añadido: {deck.name}")
+            self._lorcana_load_btn.state(["!disabled"])
+        elif kind == "lorcana_deck_error":
+            _, msg = ev
+            self._lorcana_status_var.set("Error al cargar el mazo.")
+            self._lorcana_load_btn.state(["!disabled"])
             self._show_error_dialog(msg)
         elif kind == "error":
             _, msg, run_dir = ev
