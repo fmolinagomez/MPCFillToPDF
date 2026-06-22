@@ -26,6 +26,8 @@ from src.op_scraper import (
     _scrape_egman,
     _scrape_kaizoku,
     download_images,
+    expand_deck,
+    get_op_backs,
     scrape_deck,
 )
 
@@ -412,3 +414,119 @@ class TestLiveScrapers:
         assert leader.card_id == "EB01-001"
         assert leader.name == "Kouzuki Oden"
         assert deck.total_slots == 9
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — expand_deck
+# ---------------------------------------------------------------------------
+
+
+class TestExpandDeck:
+    def _make_deck(self, cards: list[OPCard]) -> OPDeck:
+        return OPDeck(name="Test", slug="test", cards=cards, source="dotgg")
+
+    def test_expands_by_quantity(self, tmp_path):
+        img = tmp_path / "card.jpg"
+        img.touch()
+        standard = tmp_path / "std.jpg"
+        standard.touch()
+        deck = self._make_deck([OPCard("OP01-001", "Card", 3, False, [])])
+        fronts, backs = expand_deck(deck, {"OP01-001": img}, None, standard)
+        assert len(fronts) == 3
+        assert len(backs) == 3
+
+    def test_leader_gets_leader_back(self, tmp_path):
+        front = tmp_path / "front.jpg"
+        front.touch()
+        leader_back = tmp_path / "leader.jpg"
+        leader_back.touch()
+        standard = tmp_path / "std.jpg"
+        standard.touch()
+        deck = self._make_deck([OPCard("OP01-001", "Leader", 1, True, [])])
+        _, backs = expand_deck(deck, {"OP01-001": front}, leader_back, standard)
+        assert backs[0] == leader_back
+
+    def test_non_leader_gets_none_back(self, tmp_path):
+        front = tmp_path / "front.jpg"
+        front.touch()
+        leader_back = tmp_path / "leader.jpg"
+        leader_back.touch()
+        standard = tmp_path / "std.jpg"
+        standard.touch()
+        deck = self._make_deck([OPCard("OP01-002", "Normal", 2, False, [])])
+        _, backs = expand_deck(deck, {"OP01-002": front}, leader_back, standard)
+        assert all(b is None for b in backs)
+
+    def test_leader_back_none_returns_none_for_leader(self, tmp_path):
+        front = tmp_path / "front.jpg"
+        front.touch()
+        standard = tmp_path / "std.jpg"
+        standard.touch()
+        deck = self._make_deck([OPCard("OP01-001", "Leader", 1, True, [])])
+        _, backs = expand_deck(deck, {"OP01-001": front}, None, standard)
+        assert backs[0] is None
+
+    def test_card_missing_from_image_map_skipped(self, tmp_path):
+        standard = tmp_path / "std.jpg"
+        standard.touch()
+        deck = self._make_deck([OPCard("OP01-999", "Missing", 3, False, [])])
+        fronts, backs = expand_deck(deck, {}, None, standard)
+        assert fronts == []
+        assert backs == []
+
+    def test_mixed_leader_and_non_leader(self, tmp_path):
+        f1 = tmp_path / "f1.jpg"
+        f1.touch()
+        f2 = tmp_path / "f2.jpg"
+        f2.touch()
+        leader_back = tmp_path / "leader.jpg"
+        leader_back.touch()
+        standard = tmp_path / "std.jpg"
+        standard.touch()
+        cards = [
+            OPCard("OP01-001", "Leader", 1, True, []),
+            OPCard("OP01-002", "Normal", 2, False, []),
+        ]
+        deck = self._make_deck(cards)
+        image_map = {"OP01-001": f1, "OP01-002": f2}
+        fronts, backs = expand_deck(deck, image_map, leader_back, standard)
+        assert len(fronts) == 3
+        assert backs[0] == leader_back
+        assert backs[1] is None
+        assert backs[2] is None
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — get_op_backs
+# ---------------------------------------------------------------------------
+
+
+class TestGetOpBacks:
+    def test_returns_real_files_when_both_present(self, tmp_path):
+        op_dir = tmp_path / "backs" / "op"
+        op_dir.mkdir(parents=True)
+        default = op_dir / "default.png"
+        leader = op_dir / "lider.png"
+        default.write_bytes(b"fake")
+        leader.write_bytes(b"fake")
+        with patch("src.op_scraper._resources_dir", return_value=tmp_path):
+            d, lider = get_op_backs()
+        assert d == default
+        assert lider == leader
+
+    def test_falls_back_to_generated_when_missing(self, tmp_path):
+        with patch("src.op_scraper._resources_dir", return_value=tmp_path):
+            d, lider = get_op_backs()
+        assert d.exists()
+        assert lider.exists()
+        assert d.suffix == ".png"
+        assert lider.suffix == ".png"
+
+    def test_falls_back_when_only_default_missing(self, tmp_path):
+        op_dir = tmp_path / "backs" / "op"
+        op_dir.mkdir(parents=True)
+        (op_dir / "lider.png").write_bytes(b"fake")
+        with patch("src.op_scraper._resources_dir", return_value=tmp_path):
+            d, lider = get_op_backs()
+        assert d.exists()
+        assert lider.exists()
