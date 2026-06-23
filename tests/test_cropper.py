@@ -13,6 +13,7 @@ from src.cropper import (
     CARD_H_MM,
     CARD_W_MM,
     _add_mirror_bleed,
+    _fill_rounded_corners,
     crop_image,
     process_for_pdf,
 )
@@ -202,3 +203,94 @@ class TestAddMirrorBleed:
         expected = ImageOps.flip(img.crop((0, h - by, w, h)))
         actual = out.crop((bx, nh - by, bx + w, nh))
         assert list(actual.getdata()) == list(expected.getdata())
+
+
+# ─── _fill_rounded_corners ──────────────────────────────────────────────────
+
+
+def _img_with_rounded_corners(w: int, h: int, border_color, corner_color) -> Image.Image:
+    """Create an image with a solid border_color and dark corner_color in the
+    corner zones to simulate Scryfall rounded corners."""
+    import math
+
+    img = Image.new("RGB", (w, h), border_color)
+    radius = max(1, round(min(w, h) * 0.04))
+    pixels = img.load()
+    # Paint dark arcs in each corner
+    corners = [(0, 0, 1, 1), (w - 1, 0, -1, 1), (0, h - 1, 1, -1), (w - 1, h - 1, -1, -1)]
+    for ox, oy, sx, sy in corners:
+        for dy in range(radius):
+            for dx in range(radius):
+                dist = math.sqrt(dx * dx + dy * dy)
+                # Only fill inside the radius (the "rounded" zone)
+                if dist <= radius * 0.9:
+                    px = ox + dx * sx
+                    py = oy + dy * sy
+                    if 0 <= px < w and 0 <= py < h:
+                        pixels[px, py] = corner_color
+    return img
+
+
+class TestFillRoundedCorners:
+    def test_fills_dark_corners(self):
+        """Dark corner pixels should be replaced by the border colour."""
+        border = (180, 120, 80)
+        dark = (5, 5, 5)
+        img = _img_with_rounded_corners(200, 280, border, dark)
+        result = _fill_rounded_corners(img)
+        # Check top-left pixel was filled
+        assert result.getpixel((0, 0)) == border
+
+    def test_no_change_on_uniform_image(self):
+        """A uniform image without rounded corners should not be modified."""
+        color = (150, 100, 60)
+        img = Image.new("RGB", (200, 280), color)
+        original_data = list(img.getdata())
+        result = _fill_rounded_corners(img)
+        assert list(result.getdata()) == original_data
+
+    def test_only_corner_zone_is_affected(self):
+        """Pixels outside the corner zone should remain untouched."""
+        import math
+
+        border = (180, 120, 80)
+        dark = (5, 5, 5)
+        w, h = 200, 280
+        img = _img_with_rounded_corners(w, h, border, dark)
+        radius = max(1, round(min(w, h) * 0.04))
+        # Sample a pixel safely inside the image but outside any corner zone
+        center_x, center_y = w // 2, h // 2
+        original = img.getpixel((center_x, center_y))
+        _fill_rounded_corners(img)
+        assert img.getpixel((center_x, center_y)) == original
+
+    def test_all_four_corners_are_filled(self):
+        """All four corners should get their dark pixels replaced."""
+        border = (200, 160, 100)
+        dark = (0, 0, 0)
+        w, h = 200, 280
+        img = _img_with_rounded_corners(w, h, border, dark)
+        result = _fill_rounded_corners(img)
+        # Check one pixel in each corner
+        assert result.getpixel((0, 0)) == border
+        assert result.getpixel((w - 1, 0)) == border
+        assert result.getpixel((0, h - 1)) == border
+        assert result.getpixel((w - 1, h - 1)) == border
+
+    def test_process_for_pdf_applies_fill_when_no_crop(self, tmp_path):
+        """process_for_pdf with crop_borders=False should fill rounded corners."""
+        border = (180, 120, 80)
+        dark = (5, 5, 5)
+        img = _img_with_rounded_corners(200, 280, border, dark)
+        inp = tmp_path / "scryfall.png"
+        img.save(str(inp))
+        out = tmp_path / "bled.png"
+        process_for_pdf(inp, out, crop_borders=False)
+        result = Image.open(out)
+        # The bled image is larger; the original image starts at (bx, by)
+        cw, ch = 200, 280
+        bx = round(cw * BLEED_MM / CARD_W_MM)
+        by = round(ch * BLEED_MM / CARD_H_MM)
+        # The pixel at the original top-left should now be the border color
+        assert result.getpixel((bx, by)) == border
+
