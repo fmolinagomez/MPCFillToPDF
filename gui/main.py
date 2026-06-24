@@ -14,7 +14,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 try:
     import windnd
@@ -26,8 +26,9 @@ except ImportError:
 from gui.locals_tab import LocalsTabMixin
 from gui.lorcana_tab import LorcanaTabMixin
 from gui.op_tab import OPTabMixin
-from gui.paths import output_dir, work_dir
+from gui.paths import app_base_dir, output_dir, work_dir
 from gui.rb_tab import RBTabMixin
+from gui.settings_tab import SettingsTabMixin
 from gui.widgets import (
     APP_TITLE,
     STAGE_LABELS,
@@ -37,6 +38,7 @@ from gui.widgets import (
     notify,
 )
 from gui.xml_tab import XmlTabMixin
+from src.app_settings import AppSettings, load_settings
 from src.cancellation import Cancelled
 from src.constants import CARDS_PER_PAGE, Stage
 from src.deck_importer import DeckCard
@@ -107,7 +109,7 @@ class AppState:
     mtg_url_decks: list[MtgUrlDeck] = field(default_factory=list)
 
 
-class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
+class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, SettingsTabMixin):
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(APP_TITLE)
@@ -123,13 +125,16 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
         self._front_rows: list[dict] = []
         self._back_rows: list[dict] = []
 
+        self._settings: AppSettings = load_settings(app_base_dir())
+        self._custom_output_dir: Path | None = self._settings.output_dir
+        self._cut_line_skip_date: str | None = None
+
         self.events: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
         self.cancel_event = threading.Event()
         self.running = False
         self.keep_cache = tk.BooleanVar(value=False)
         self._dl_speed_str: str = ""
-        self._custom_output_dir: Path | None = None
 
         self._op_decks: list[OPDeck] = []
         self._op_deck_rows: list[dict] = []
@@ -189,14 +194,11 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
 
         out_row = ttk.Frame(bottom_controls)
         out_row.pack(fill=tk.X, pady=(8, 0))
-        self.out_dir_var = tk.StringVar(value=str(output_dir()))
+        self.out_dir_var = tk.StringVar(value=str(self._custom_output_dir or output_dir()))
         self.out_label = ttk.Label(
             out_row, textvariable=self.out_dir_var, foreground="#666", anchor=tk.W
         )
         self.out_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(out_row, text="Cambiar…", command=self._pick_output_dir, width=9).pack(
-            side=tk.RIGHT, padx=(6, 0)
-        )
 
         self.timing_var = tk.StringVar(value="")
         ttk.Label(
@@ -261,6 +263,10 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
             lorcana_kw["compound"] = "left"
         notebook.add(lorcana_frame, **lorcana_kw)
         self._build_lorcana_tab(lorcana_frame)
+
+        settings_frame = ttk.Frame(notebook)
+        notebook.add(settings_frame, text=" ⚙ Configuración")
+        self._build_settings_tab(settings_frame)
 
     def _build_scrollable_rows(self, parent: ttk.Frame):
         """Create a Canvas + inner Frame for a vertically scrolling list of rows."""
@@ -332,15 +338,6 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
             canvas.yview_scroll(1, "units")
         else:
             canvas.yview_scroll(int(-event.delta / 120), "units")
-
-    def _pick_output_dir(self) -> None:
-        chosen = filedialog.askdirectory(
-            title="Selecciona la carpeta de salida para los PDFs",
-            initialdir=str(self._custom_output_dir or output_dir()),
-        )
-        if chosen:
-            self._custom_output_dir = Path(chosen)
-            self.out_dir_var.set(str(self._custom_output_dir))
 
     def _effective_output_dir(self) -> Path:
         d = self._custom_output_dir or output_dir()
@@ -508,6 +505,98 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
             m[p] = c
         return m
 
+    def _confirm_cut_lines(self) -> bool:
+        """Show a modal summary of cut-line settings before generating.
+
+        Returns True if the user accepted (or already suppressed for today).
+        """
+        today = datetime.now().date().isoformat()
+        if self._cut_line_skip_date == today:
+            return True
+
+        s = self._settings
+        style_label = (
+            "Marcas de margen  (para copistería)"
+            if s.cut_line_style == "ticks"
+            else "Líneas completas  (para autocorte)"
+        )
+        over_label = "Sí" if s.cut_line_over_cards else "No"
+
+        accepted = [False]
+        skip_var = tk.BooleanVar(value=False)
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Configuración de líneas de corte")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        pad = {"padx": 16, "pady": 6}
+        outer = ttk.Frame(dlg)
+        outer.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        ttk.Label(
+            outer,
+            text="Configuración actual de las líneas de corte:",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor=tk.W, **pad)
+
+        grid = ttk.Frame(outer)
+        grid.pack(anchor=tk.W, padx=16, pady=(0, 4))
+
+        def _row(label: str, value: str, color: str | None = None) -> None:
+            r = grid.grid_size()[1]
+            ttk.Label(grid, text=label, foreground="#555").grid(
+                row=r, column=0, sticky=tk.W, pady=2
+            )
+            if color:
+                swatch = tk.Label(grid, width=3, bg=color, relief=tk.SOLID, borderwidth=1)
+                swatch.grid(row=r, column=1, sticky=tk.W, padx=(8, 4))
+                ttk.Label(grid, text=value, foreground="#222").grid(row=r, column=2, sticky=tk.W)
+            else:
+                ttk.Label(grid, text=value, foreground="#222").grid(
+                    row=r, column=1, columnspan=2, sticky=tk.W, padx=(8, 0)
+                )
+
+        _row("Color:", s.cut_line_color, color=s.cut_line_color)
+        _row("Grosor:", f"{s.cut_line_width:.1f} pt")
+        _row("Estilo:", style_label)
+        _row("Sobre las cartas:", over_label)
+
+        ttk.Separator(outer, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=16, pady=(8, 6))
+
+        ttk.Checkbutton(
+            outer,
+            text="No volver a preguntar hoy",
+            variable=skip_var,
+        ).pack(anchor=tk.W, padx=16, pady=(0, 8))
+
+        btn_row = ttk.Frame(outer)
+        btn_row.pack(fill=tk.X, padx=16, pady=(0, 10))
+
+        def _accept():
+            accepted[0] = True
+            if skip_var.get():
+                self._cut_line_skip_date = today
+            dlg.destroy()
+
+        def _cancel():
+            dlg.destroy()
+
+        ttk.Button(btn_row, text="Cancelar", command=_cancel).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(btn_row, text="Aceptar", command=_accept).pack(side=tk.RIGHT)
+
+        dlg.update_idletasks()
+        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"{w}x{h}+{x}+{y}")
+
+        dlg.bind("<Return>", lambda _e: _accept())
+        dlg.bind("<Escape>", lambda _e: _cancel())
+        self.root.wait_window(dlg)
+        return accepted[0]
+
     def _start(self, fronts_only: bool = False) -> None:
         if self.running:
             return
@@ -533,6 +622,9 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
                 "Sin XMLs se necesita al menos un back local "
                 "(el primero actúa como reverso por defecto).",
             )
+            return
+
+        if not self._confirm_cut_lines():
             return
 
         reports = []
@@ -622,7 +714,15 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
         self._reset_xml_download_progress()
         self.worker = threading.Thread(
             target=self._work,
-            args=(plan_, reports, fronts_only),
+            args=(
+                plan_,
+                reports,
+                fronts_only,
+                self._settings.cut_line_color,
+                self._settings.cut_line_style,
+                self._settings.cut_line_width,
+                self._settings.cut_line_over_cards,
+            ),
             daemon=True,
         )
         self.worker.start()
@@ -640,7 +740,16 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
         self.stop_btn.state(["disabled"])
         self.status_var.set("Cancelando…")
 
-    def _work(self, plan_, reports, fronts_only: bool = False) -> None:
+    def _work(
+        self,
+        plan_,
+        reports,
+        fronts_only: bool = False,
+        cut_line_color: str = "#000000",
+        cut_line_style: str = "ticks",
+        cut_line_width: float = 1.0,
+        cut_line_over_cards: bool = False,
+    ) -> None:
         run_dir = None
         wd = None
         try:
@@ -822,9 +931,11 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
                 scryfall_dir = wd / "scryfall"
                 mtg_cards_with_deck: list[tuple[DeckCard, MtgUrlDeck]] = []
                 for _deck in self.state.mtg_url_decks:
-                    for c in _deck.cards:
-                        if c.zone == "main" or _deck.include_side:
-                            mtg_cards_with_deck.append((c, _deck))
+                    deck_cards = sorted(
+                        ((c, _deck) for c in _deck.cards if c.zone == "main" or _deck.include_side),
+                        key=lambda x: x[0].name.casefold(),
+                    )
+                    mtg_cards_with_deck.extend(deck_cards)
                 mtg_cards_all = [c for c, _ in mtg_cards_with_deck]
                 mtg_label = f"Magic – {len(self.state.mtg_url_decks)} mazo(s)"
                 self.events.put(("progress", "download", 0, len(mtg_cards_all), mtg_label))
@@ -947,6 +1058,10 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
                     on_xml_crop_progress=on_xml_crop_progress,
                     fronts_only=fronts_only,
                     on_speed_update=on_speed_update,
+                    cut_line_color=cut_line_color,
+                    cut_line_style=cut_line_style,
+                    cut_line_width=cut_line_width,
+                    cut_line_over_cards=cut_line_over_cards,
                 )
                 generated.extend(pdfs)
                 manifest = write_manifest(plan_, reports, run_dir)
@@ -994,6 +1109,10 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin):
                     extra_backs=all_extra_backs,
                     local_crop_map=all_crop_map,
                     fronts_only=fronts_only,
+                    cut_line_color=cut_line_color,
+                    cut_line_style=cut_line_style,
+                    cut_line_width=cut_line_width,
+                    cut_line_over_cards=cut_line_over_cards,
                 )
                 generated.extend(pdfs)
                 manifest = None

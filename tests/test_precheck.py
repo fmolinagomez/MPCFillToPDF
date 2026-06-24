@@ -9,7 +9,6 @@ from src.precheck import (
     analyze,
     check_drive_access,
     collect_drive_ids,
-    format_merge_info,
     format_warning,
     plan,
     write_manifest,
@@ -185,22 +184,6 @@ def test_plan_empty_reports(tmp_path):
 
 
 # ─── format helpers ──────────────────────────────────────────────────────────
-
-
-def test_format_merge_info_none_when_no_merge(tmp_path):
-    r = XmlReport(tmp_path / "a.xml", 9, 0)
-    p = plan([r])
-    assert format_merge_info(p) is None
-
-
-def test_format_merge_info_contains_xml_names(tmp_path):
-    r1 = XmlReport(tmp_path / "alpha.xml", 7, 2)
-    r2 = XmlReport(tmp_path / "beta.xml", 5, 4)
-    p = plan([r1, r2])
-    info = format_merge_info(p)
-    assert info is not None
-    assert "alpha.xml" in info
-    assert "beta.xml" in info
 
 
 def test_format_warning_none_when_no_blanks(tmp_path):

@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 
+from src.app_settings import (
+    DEFAULT_CUT_LINE_COLOR,
+    DEFAULT_CUT_LINE_OVER_CARDS,
+    DEFAULT_CUT_LINE_STYLE,
+    DEFAULT_CUT_LINE_WIDTH,
+)
 from src.cancellation import Cancelled
 from src.constants import Stage, StageCallback
 from src.cropper import process_for_pdf
@@ -162,6 +168,10 @@ def run_locals_only(
     extra_backs: list[str | Path | None] | None = None,
     local_crop_map: dict[Path, bool] | None = None,
     fronts_only: bool = False,
+    cut_line_color: str = DEFAULT_CUT_LINE_COLOR,
+    cut_line_style: str = DEFAULT_CUT_LINE_STYLE,
+    cut_line_width: float = DEFAULT_CUT_LINE_WIDTH,
+    cut_line_over_cards: bool = DEFAULT_CUT_LINE_OVER_CARDS,
 ) -> list[Path]:
     """Generate PDF(s) only from local images (no XML).
 
@@ -182,6 +192,10 @@ def run_locals_only(
         local_cardback=local_cardback,
         local_crop_map=local_crop_map,
         fronts_only=fronts_only,
+        cut_line_color=cut_line_color,
+        cut_line_style=cut_line_style,
+        cut_line_width=cut_line_width,
+        cut_line_over_cards=cut_line_over_cards,
     )
 
 
@@ -211,12 +225,18 @@ def _build_slot_maps(
 
     for path, order in zip(xml_paths, orders):
         xml_name = path.name
-        front_by_slot = {s: c.drive_id for c in order.fronts for s in c.slots}
+        entries = sorted(
+            (
+                (c.name.casefold(), orig_slot, c.drive_id)
+                for c in order.fronts
+                for orig_slot in c.slots
+            ),
+            key=lambda e: (e[0], e[1]),
+        )
         needed: set[str] = set()
-        for orig_slot in sorted(front_by_slot):
+        for _, orig_slot, fid in entries:
             ns = next_slot
             next_slot += 1
-            fid = front_by_slot[orig_slot]
             bid = order.back_for_slot(orig_slot)
             front_slot_to_id[ns] = fid
             back_slot_to_id[ns] = bid
@@ -264,6 +284,10 @@ def _run_xmls(
     local_cardback: str | Path | None = None,
     local_crop_map: dict[Path, bool] | None = None,
     fronts_only: bool = False,
+    cut_line_color: str = DEFAULT_CUT_LINE_COLOR,
+    cut_line_style: str = DEFAULT_CUT_LINE_STYLE,
+    cut_line_width: float = DEFAULT_CUT_LINE_WIDTH,
+    cut_line_over_cards: bool = DEFAULT_CUT_LINE_OVER_CARDS,
 ) -> list[Path]:
     extra_fronts = [Path(p) for p in (extra_fronts or [])]
     # extra_backs is parallel to extra_fronts; entries may be None to mean
@@ -379,6 +403,10 @@ def _run_xmls(
         progress_callback=_cb(Stage.PDF),
         cancel_event=cancel_event,
         fronts_only=fronts_only,
+        cut_line_color=cut_line_color,
+        cut_line_style=cut_line_style,
+        cut_line_width=cut_line_width,
+        cut_line_over_cards=cut_line_over_cards,
     )
 
 
@@ -456,6 +484,10 @@ def run_plan(
     on_xml_crop_progress: StageCallback = None,
     fronts_only: bool = False,
     on_speed_update=None,
+    cut_line_color: str = DEFAULT_CUT_LINE_COLOR,
+    cut_line_style: str = DEFAULT_CUT_LINE_STYLE,
+    cut_line_width: float = DEFAULT_CUT_LINE_WIDTH,
+    cut_line_over_cards: bool = DEFAULT_CUT_LINE_OVER_CARDS,
 ) -> list[Path]:
     """Download ALL images first, then crop all, then generate each job's PDFs.
 
@@ -613,6 +645,10 @@ def run_plan(
             progress_callback=_cb(Stage.PDF),
             cancel_event=cancel_event,
             fronts_only=fronts_only,
+            cut_line_color=cut_line_color,
+            cut_line_style=cut_line_style,
+            cut_line_width=cut_line_width,
+            cut_line_over_cards=cut_line_over_cards,
         )
         all_outputs.extend(outputs)
 

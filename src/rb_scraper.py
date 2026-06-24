@@ -660,16 +660,21 @@ def expand_deck(
         # champion, maindeck, sideboard
         return backs.get("maindeck")
 
+    entries: list[tuple[str, RBCard, str]] = []
     for section in SECTION_ORDER:
         if section == "rune" and not include_runes:
             continue
         for card in deck.by_section()[section]:
-            img = image_map.get(card.variant_id)
-            if img is None:
-                continue
-            back = _back_for(section)
-            for _ in range(card.quantity):
-                fronts.append(img)
-                per_backs.append(back)
+            entries.append((card.name.casefold(), card, section))
+    entries.sort(key=lambda e: e[0])
+
+    for _, card, section in entries:
+        img = image_map.get(card.variant_id)
+        if img is None:
+            continue
+        back = _back_for(section)
+        for _ in range(card.quantity):
+            fronts.append(img)
+            per_backs.append(back)
 
     return fronts, per_backs

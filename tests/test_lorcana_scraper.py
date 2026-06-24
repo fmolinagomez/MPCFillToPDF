@@ -165,6 +165,24 @@ class TestExpandDeck:
         fronts, _ = expand_deck(deck, {"001-001": img1, "001-002": img2})
         assert fronts == [img1, img1, img2]
 
+    def test_cards_ordered_alphabetically_by_name(self, tmp_path):
+        deck = LocanaDeck(
+            deck_id="x",
+            name="X",
+            cards=[
+                LorcanaCard("001-003", "Zebra", 1, "url"),
+                LorcanaCard("001-001", "Apple", 1, "url"),
+                LorcanaCard("001-002", "Mango", 2, "url"),
+            ],
+        )
+        img_a = tmp_path / "001-001.webp"
+        img_m = tmp_path / "001-002.webp"
+        img_z = tmp_path / "001-003.webp"
+        for p in (img_a, img_m, img_z):
+            p.write_bytes(b"img")
+        fronts, _ = expand_deck(deck, {"001-001": img_a, "001-002": img_m, "001-003": img_z})
+        assert fronts == [img_a, img_m, img_m, img_z]  # Apple, Mango×2, Zebra
+
 
 # ---------------------------------------------------------------------------
 # Unit tests — inkdecks card list parsing

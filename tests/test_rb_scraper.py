@@ -452,6 +452,45 @@ class TestExpandDeck:
         assert fronts[0] == leg_img
         assert fronts[1] == unit_img
 
+    def test_cards_ordered_alphabetically_by_name(self, tmp_path):
+        deck = RBDeck(
+            deck_id="x",
+            name="X",
+            cards=[
+                RBCard("Z001", "Z001", "Zebra", "Unit", None, 1, "url", "maindeck"),
+                RBCard("A001", "A001", "Apple", "Unit", None, 1, "url", "maindeck"),
+                RBCard("M001", "M001", "Mango", "Unit", None, 1, "url", "maindeck"),
+            ],
+        )
+        img_a = tmp_path / "A001.webp"
+        img_m = tmp_path / "M001.webp"
+        img_z = tmp_path / "Z001.webp"
+        for p in (img_a, img_m, img_z):
+            p.write_bytes(b"img")
+        backs = self._back_map(tmp_path)
+        fronts, _ = expand_deck(deck, {"A001": img_a, "M001": img_m, "Z001": img_z}, backs)
+        assert fronts == [img_a, img_m, img_z]  # Apple, Mango, Zebra
+
+    def test_alphabetical_order_spans_sections(self, tmp_path):
+        """A maindeck card named 'Aardvark' sorts before a legend named 'Zebra'."""
+        deck = RBDeck(
+            deck_id="x",
+            name="X",
+            cards=[
+                RBCard("LEG", "LEG", "Zebra", "Legend", None, 1, "url", "legend"),
+                RBCard("UNIT", "UNIT", "Aardvark", "Unit", None, 1, "url", "maindeck"),
+            ],
+        )
+        leg_img = tmp_path / "LEG.webp"
+        unit_img = tmp_path / "UNIT.webp"
+        for p in (leg_img, unit_img):
+            p.write_bytes(b"img")
+        backs = self._back_map(tmp_path)
+        fronts, per_backs = expand_deck(deck, {"LEG": leg_img, "UNIT": unit_img}, backs)
+        assert fronts == [unit_img, leg_img]  # Aardvark before Zebra
+        assert per_backs[0] == backs["maindeck"]  # back follows the card's section
+        assert per_backs[1] == backs["legend"]
+
 
 # ---------------------------------------------------------------------------
 # Unit tests — download_images cancellation

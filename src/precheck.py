@@ -186,18 +186,6 @@ def plan(reports: list[XmlReport], local_count: int = 0) -> Plan:
     return Plan(jobs, merged_xmls)
 
 
-def format_merge_info(plan_: Plan) -> str | None:
-    if not plan_.has_merge:
-        return None
-    lines = ["Se fusionarán las siguientes barajas para reducir huecos en blanco:"]
-    for job in plan_.jobs:
-        if not job.is_merged:
-            continue
-        names = ", ".join(p.name for p in job.xml_paths)
-        lines.append(f"  • {job.base_name}.pdf ← {names}  ({job.cards} cartas)")
-    return "\n".join(lines)
-
-
 def format_warning(plan_: Plan) -> str | None:
     """Warning about blank slots that will be printed."""
     bad = plan_.residual_blanks

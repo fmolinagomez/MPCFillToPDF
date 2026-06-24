@@ -25,8 +25,9 @@ _HEADERS = {
     "User-Agent": "MPCFillToPDF/2.0",
     "Accept": "application/json",
 }
-_TIMEOUT = 15
+_TIMEOUT = 20
 _RATE_DELAY = 0.1  # Scryfall policy: max 10 req/s
+_RETRY_DELAYS = (3, 6)  # backoff between retries on transient errors
 
 SCRYFALL_THREADS = 5
 
@@ -52,19 +53,43 @@ class ScryfallCard:
 
 def _throttled_get(url: str, params: dict | None = None) -> requests.Response:
     global _last_request_time
-    for attempt in range(3):
+    max_attempts = 1 + len(_RETRY_DELAYS)
+    last_exc: requests.RequestException | None = None
+    for attempt in range(max_attempts):
         with _rate_lock:
             now = time.monotonic()
             wait = _RATE_DELAY - (now - _last_request_time)
             if wait > 0:
                 time.sleep(wait)
             _last_request_time = time.monotonic()
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, params=params)
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, params=params)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_exc = exc
+            if attempt < len(_RETRY_DELAYS):
+                delay = _RETRY_DELAYS[attempt]
+                _log.warning(
+                    "Scryfall timeout/conexión, reintentando en %.0fs (intento %d/%d): %s",
+                    delay,
+                    attempt + 1,
+                    max_attempts,
+                    exc,
+                )
+                time.sleep(delay)
+                continue
+            raise
         if resp.status_code != 429:
             return resp
         retry_after = float(resp.headers.get("Retry-After", 2**attempt))
-        _log.warning("Scryfall 429, reintentando en %.1fs (intento %d/3)", retry_after, attempt + 1)
+        _log.warning(
+            "Scryfall 429, reintentando en %.1fs (intento %d/%d)",
+            retry_after,
+            attempt + 1,
+            max_attempts,
+        )
         time.sleep(retry_after)
+    if last_exc is not None:
+        raise last_exc
     return resp
 
 

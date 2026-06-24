@@ -9,6 +9,7 @@ from PIL import Image
 from src.cancellation import Cancelled
 from src.pdf_generator import (
     CARDS_PER_PAGE,
+    _hex_to_rgb,
     _pair_drive_ids,
     _projected_pdf_bytes,
     generate,
@@ -256,3 +257,108 @@ def test_generate_split_all_files_exist(tmp_path):
     for r in results:
         assert r.exists()
         assert r.stat().st_size > 0
+
+
+# ─── _hex_to_rgb ─────────────────────────────────────────────────────────────
+
+
+class TestHexToRgb:
+    def test_black(self):
+        assert _hex_to_rgb("#000000") == (0.0, 0.0, 0.0)
+
+    def test_white(self):
+        r, g, b = _hex_to_rgb("#ffffff")
+        assert abs(r - 1.0) < 1e-6
+        assert abs(g - 1.0) < 1e-6
+        assert abs(b - 1.0) < 1e-6
+
+    def test_red(self):
+        r, g, b = _hex_to_rgb("#ff0000")
+        assert abs(r - 1.0) < 1e-6
+        assert g == 0.0
+        assert b == 0.0
+
+    def test_shorthand(self):
+        assert _hex_to_rgb("#fff") == _hex_to_rgb("#ffffff")
+
+
+# ─── cut line params ─────────────────────────────────────────────────────────
+
+
+class TestGenerateCutLineParams:
+    def test_generate_accepts_custom_color(self, tmp_path):
+        img = _img(tmp_path / "card.jpg")
+        slots, front, back = _slot_maps(1)
+        id_map = _id_to_path(front, back, img)
+        results = generate(
+            tmp_path / "out",
+            "deck",
+            slots,
+            front,
+            back,
+            id_map,
+            cut_line_color="#ff0000",
+        )
+        assert len(results) == 1 and results[0].exists()
+
+    def test_generate_accepts_full_style(self, tmp_path):
+        img = _img(tmp_path / "card.jpg")
+        slots, front, back = _slot_maps(1)
+        id_map = _id_to_path(front, back, img)
+        results = generate(
+            tmp_path / "out",
+            "deck",
+            slots,
+            front,
+            back,
+            id_map,
+            cut_line_style="full",
+        )
+        assert len(results) == 1 and results[0].exists()
+
+    def test_generate_full_and_custom_color(self, tmp_path):
+        img = _img(tmp_path / "card.jpg")
+        slots, front, back = _slot_maps(9)
+        id_map = _id_to_path(front, back, img)
+        results = generate(
+            tmp_path / "out",
+            "deck",
+            slots,
+            front,
+            back,
+            id_map,
+            cut_line_color="#0000ff",
+            cut_line_style="full",
+        )
+        assert len(results) == 1 and results[0].exists()
+        assert results[0].stat().st_size > 0
+
+    def test_generate_custom_cut_line_width(self, tmp_path):
+        img = _img(tmp_path / "card.jpg")
+        slots, front, back = _slot_maps(1)
+        id_map = _id_to_path(front, back, img)
+        results = generate(
+            tmp_path / "out",
+            "deck",
+            slots,
+            front,
+            back,
+            id_map,
+            cut_line_width=3.0,
+        )
+        assert len(results) == 1 and results[0].exists()
+
+    def test_generate_cut_line_over_cards(self, tmp_path):
+        img = _img(tmp_path / "card.jpg")
+        slots, front, back = _slot_maps(1)
+        id_map = _id_to_path(front, back, img)
+        results = generate(
+            tmp_path / "out",
+            "deck",
+            slots,
+            front,
+            back,
+            id_map,
+            cut_line_over_cards=True,
+        )
+        assert len(results) == 1 and results[0].exists()

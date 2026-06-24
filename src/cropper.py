@@ -30,7 +30,9 @@ def _luminance(r: int, g: int, b: int) -> float:
 
 
 def _sample_border_color(
-    img: Image.Image, corner: str, radius: int,
+    img: Image.Image,
+    corner: str,
+    radius: int,
 ) -> tuple[int, int, int]:
     """Sample the border color near a corner by taking the median of pixels
     along the horizontal and vertical edges just outside the rounded zone."""
@@ -186,15 +188,3 @@ def process_for_pdf(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bled.save(output_path)
     return output_path
-
-
-def crop_image(input_path: str | Path, output_path: str | Path) -> None:
-    """Standalone crop to trim size (without bleed)."""
-    try:
-        img = Image.open(input_path)
-    except Exception as exc:
-        raise RuntimeError(f"No se puede abrir la imagen '{input_path}': {exc}") from exc
-    trimmed = _crop_to_trim(img)
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    trimmed.save(output_path)

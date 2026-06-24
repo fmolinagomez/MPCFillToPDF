@@ -407,6 +407,40 @@ class TestBuildSlotMaps:
         assert back_map == {}
         assert next_slot == 0
 
+    def test_slots_assigned_in_alphabetical_name_order(self, tmp_path):
+        """Cards assigned slots in alphabetical name order regardless of XML slot numbers."""
+        xml = make_xml(
+            tmp_path / "deck.xml",
+            fronts=[
+                {"id": "FZEBRA", "name": "Zebra", "slots": "0"},
+                {"id": "FAPPLE", "name": "Apple", "slots": "1"},
+                {"id": "FMANGO", "name": "Mango", "slots": "2"},
+            ],
+            cardback_id="CB001",
+            quantity=3,
+        )
+        order = parse(xml)
+        front_map, _, _, _, _, _ = _build_slot_maps([xml], [order], 0)
+        # Global slot 0 → Apple, 1 → Mango, 2 → Zebra
+        assert front_map[0] == "FAPPLE"
+        assert front_map[1] == "FMANGO"
+        assert front_map[2] == "FZEBRA"
+
+    def test_alphabetical_order_is_case_insensitive(self, tmp_path):
+        xml = make_xml(
+            tmp_path / "deck.xml",
+            fronts=[
+                {"id": "FB", "name": "banana", "slots": "0"},
+                {"id": "FA", "name": "Apple", "slots": "1"},
+            ],
+            cardback_id="CB001",
+            quantity=2,
+        )
+        order = parse(xml)
+        front_map, _, _, _, _, _ = _build_slot_maps([xml], [order], 0)
+        assert front_map[0] == "FA"  # Apple before banana
+        assert front_map[1] == "FB"
+
 
 # ─── run / run_merged ────────────────────────────────────────────────────────
 

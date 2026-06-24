@@ -1,52 +1,52 @@
 active_intent:
-  id: "INTENT-001"
-  title: "Importar deck desde URL de deckbuilder en la tab de Magic"
+  id: "INTENT-002"
+  title: "Tab Configuración: ruta de exportación, color y estilo de líneas de corte"
   status: completed
-  last_updated: "2026-06-21"
+  last_updated: "2026-06-24"
 
 work_items:
   - id: "WI-001"
-    title: "src/deck_importer.py — fetch deck list con set+número por carta"
+    title: "src/app_settings.py — persistencia de configuración"
     status: completed
     files:
-      - path: "src/deck_importer.py"
+      - path: "src/app_settings.py"
         action: created
 
   - id: "WI-002"
-    title: "src/scryfall.py — descarga imágenes por set+número con soporte MDFC"
+    title: "src/pdf_generator.py — parametrizar color y estilo de líneas"
     status: completed
     files:
-      - path: "src/scryfall.py"
-        action: created
+      - path: "src/pdf_generator.py"
+        action: modified
 
   - id: "WI-003"
-    title: "src/pipeline.py — run_deck_url()"
+    title: "src/pipeline.py — thread through cut_line_color y cut_line_style"
     status: completed
     files:
       - path: "src/pipeline.py"
         action: modified
 
   - id: "WI-004"
-    title: "gui/xml_tab.py — sección 'Importar desde URL' con sideboard checkbox"
+    title: "gui/settings_tab.py — SettingsTabMixin con UI completa"
     status: completed
     files:
-      - path: "gui/xml_tab.py"
-        action: modified
+      - path: "gui/settings_tab.py"
+        action: created
 
   - id: "WI-005"
-    title: "gui/main.py — AppState + worker para run_deck_url"
+    title: "gui/main.py — integrar tab, cargar settings, pasar params al worker"
     status: completed
     files:
       - path: "gui/main.py"
         action: modified
 
   - id: "WI-006"
-    title: "tests — test_deck_importer.py + test_scryfall.py"
+    title: "tests — test_app_settings.py + nuevos tests en test_pdf_generator.py"
     status: completed
     files:
-      - path: "tests/test_deck_importer.py"
+      - path: "tests/test_app_settings.py"
         action: created
-      - path: "tests/test_scryfall.py"
-        action: created
+      - path: "tests/test_pdf_generator.py"
+        action: modified
 
-last_updated: "2026-06-21"
+last_updated: "2026-06-24"

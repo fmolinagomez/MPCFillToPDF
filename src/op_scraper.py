@@ -395,7 +395,7 @@ def expand_deck(
     """
     fronts: list[Path] = []
     backs: list[Path | None] = []
-    for card in deck.cards:
+    for card in sorted(deck.cards, key=lambda c: c.name.casefold()):
         img_path = image_map.get(card.card_id)
         if img_path is None:
             continue

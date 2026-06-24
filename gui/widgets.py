@@ -73,7 +73,6 @@ def notify(title: str, message: str) -> None:
             pass
 
 
-
 def attach_context_menu(widget: tk.Widget) -> None:
     """Attach a right-click context menu (cut/copy/paste/select all) to an Entry or Text widget."""
     menu = tk.Menu(widget, tearoff=0)

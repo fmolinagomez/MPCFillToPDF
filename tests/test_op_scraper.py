@@ -495,6 +495,26 @@ class TestExpandDeck:
         assert backs[1] is None
         assert backs[2] is None
 
+    def test_cards_ordered_alphabetically_by_name(self, tmp_path):
+        f1 = tmp_path / "f1.jpg"
+        f1.touch()
+        f2 = tmp_path / "f2.jpg"
+        f2.touch()
+        f3 = tmp_path / "f3.jpg"
+        f3.touch()
+        standard = tmp_path / "std.jpg"
+        standard.touch()
+        cards = [
+            OPCard("OP01-003", "Zebra", 1, False, []),
+            OPCard("OP01-001", "Apple", 1, False, []),
+            OPCard("OP01-002", "Mango", 1, False, []),
+        ]
+        deck = self._make_deck(cards)
+        fronts, _ = expand_deck(
+            deck, {"OP01-001": f1, "OP01-002": f2, "OP01-003": f3}, None, standard
+        )
+        assert fronts == [f1, f2, f3]  # Apple, Mango, Zebra
+
 
 # ---------------------------------------------------------------------------
 # Unit tests — get_op_backs

@@ -14,7 +14,6 @@ from src.cropper import (
     CARD_W_MM,
     _add_mirror_bleed,
     _fill_rounded_corners,
-    crop_image,
     process_for_pdf,
 )
 
@@ -105,43 +104,6 @@ def test_process_for_pdf_creates_parent_dirs(tmp_path):
     out = tmp_path / "a" / "b" / "c" / "bled.jpg"
     process_for_pdf(inp, out, crop_borders=True)
     assert out.exists()
-
-
-# ─── crop_image ─────────────────────────────────────────────────────────────
-
-
-def test_crop_image_output_dimensions(tmp_path):
-    w, h = 200, 280
-    inp = _img(tmp_path / "card.jpg", w, h)
-    out = tmp_path / "cropped.jpg"
-    crop_image(inp, out)
-    bx = round(w * _BLEED_X)
-    by = round(h * _BLEED_Y)
-    assert Image.open(out).size == (w - 2 * bx, h - 2 * by)
-
-
-def test_crop_image_smaller_than_input(tmp_path):
-    w, h = 300, 420
-    inp = _img(tmp_path / "card.jpg", w, h)
-    out = tmp_path / "cropped.jpg"
-    crop_image(inp, out)
-    cw, ch = Image.open(out).size
-    assert cw < w and ch < h
-
-
-def test_crop_image_creates_parent_dirs(tmp_path):
-    inp = _img(tmp_path / "card.jpg")
-    out = tmp_path / "nested" / "dir" / "cropped.jpg"
-    crop_image(inp, out)
-    assert out.exists()
-
-
-def test_crop_image_invalid_raises(tmp_path):
-    bad = tmp_path / "bad.jpg"
-    bad.write_bytes(b"garbage")
-    out = tmp_path / "out.jpg"
-    with pytest.raises(RuntimeError, match="abrir"):
-        crop_image(bad, out)
 
 
 # ─── _add_mirror_bleed ──────────────────────────────────────────────────────
@@ -251,13 +213,11 @@ class TestFillRoundedCorners:
 
     def test_only_corner_zone_is_affected(self):
         """Pixels outside the corner zone should remain untouched."""
-        import math
 
         border = (180, 120, 80)
         dark = (5, 5, 5)
         w, h = 200, 280
         img = _img_with_rounded_corners(w, h, border, dark)
-        radius = max(1, round(min(w, h) * 0.04))
         # Sample a pixel safely inside the image but outside any corner zone
         center_x, center_y = w // 2, h // 2
         original = img.getpixel((center_x, center_y))
@@ -293,4 +253,3 @@ class TestFillRoundedCorners:
         by = round(ch * BLEED_MM / CARD_H_MM)
         # The pixel at the original top-left should now be the border color
         assert result.getpixel((bx, by)) == border
-

@@ -5,6 +5,12 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
+from src.app_settings import (
+    DEFAULT_CUT_LINE_COLOR,
+    DEFAULT_CUT_LINE_OVER_CARDS,
+    DEFAULT_CUT_LINE_STYLE,
+    DEFAULT_CUT_LINE_WIDTH,
+)
 from src.cancellation import Cancelled
 from src.constants import CARDS_PER_PAGE, COLS, ROWS
 
@@ -52,8 +58,26 @@ def _trim_origin(col: int, row: int) -> tuple[float, float]:
     return x, y
 
 
-def _draw_crop_marks(c: canvas.Canvas) -> None:
-    """Trim-edge ticks in the page margins only (no lines crossing inner gaps)."""
+def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
+    """Convert '#rrggbb' to (r, g, b) floats in [0, 1]."""
+    h = hex_color.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return r / 255.0, g / 255.0, b / 255.0
+
+
+def _draw_crop_marks(
+    c: canvas.Canvas,
+    color_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    style: str = DEFAULT_CUT_LINE_STYLE,
+    line_width: float = DEFAULT_CUT_LINE_WIDTH,
+) -> None:
+    """Draw trim guides.
+
+    style='ticks': short ticks in page margins only (for print shops).
+    style='full': continuous lines spanning the full page (for self-cutting).
+    """
     xs = [MARGIN_X + col * (CARD_W + GAP_X) + dx for col in range(COLS) for dx in (0.0, CARD_W)]
     ys = [
         PAGE_H - MARGIN_Y - (row + 1) * CARD_H - row * GAP_Y + dy
@@ -62,20 +86,26 @@ def _draw_crop_marks(c: canvas.Canvas) -> None:
     ]
 
     c.saveState()
-    c.setLineWidth(MARK_W)
-    c.setStrokeColorRGB(0, 0, 0)
-    # Vertical ticks at each column trim X, in the top and bottom margins only
-    top_y_end = PAGE_H - MARGIN_Y + MARK_GAP
-    bot_y_end = MARGIN_Y - MARK_GAP
-    for x in xs:
-        c.line(x, 0, x, bot_y_end)
-        c.line(x, top_y_end, x, PAGE_H)
-    # Horizontal ticks at each row trim Y, in the left and right margins only
-    left_x_end = MARGIN_X - MARK_GAP
-    right_x_end = PAGE_W - MARGIN_X + MARK_GAP
-    for y in ys:
-        c.line(0, y, left_x_end, y)
-        c.line(right_x_end, y, PAGE_W, y)
+    c.setLineWidth(line_width)
+    c.setStrokeColorRGB(*color_rgb)
+
+    if style == "full":
+        for x in xs:
+            c.line(x, 0, x, PAGE_H)
+        for y in ys:
+            c.line(0, y, PAGE_W, y)
+    else:
+        top_y_end = PAGE_H - MARGIN_Y + MARK_GAP
+        bot_y_end = MARGIN_Y - MARK_GAP
+        for x in xs:
+            c.line(x, 0, x, bot_y_end)
+            c.line(x, top_y_end, x, PAGE_H)
+        left_x_end = MARGIN_X - MARK_GAP
+        right_x_end = PAGE_W - MARGIN_X + MARK_GAP
+        for y in ys:
+            c.line(0, y, left_x_end, y)
+            c.line(right_x_end, y, PAGE_W, y)
+
     c.restoreState()
 
 
@@ -109,8 +139,15 @@ def _draw_page(
     id_to_path: dict[str, Path],
     slot_to_id: dict[int, str],
     page_label: str | None = None,
+    cut_line_color: str = DEFAULT_CUT_LINE_COLOR,
+    cut_line_style: str = DEFAULT_CUT_LINE_STYLE,
+    cut_line_width: float = DEFAULT_CUT_LINE_WIDTH,
+    cut_line_over_cards: bool = DEFAULT_CUT_LINE_OVER_CARDS,
 ) -> None:
-    _draw_crop_marks(c)
+    color_rgb = _hex_to_rgb(cut_line_color)
+
+    if not cut_line_over_cards:
+        _draw_crop_marks(c, color_rgb, cut_line_style, cut_line_width)
     _draw_printer_marks(c, page_label)
 
     for idx, slot in enumerate(slots):
@@ -120,6 +157,9 @@ def _draw_page(
             img_path = id_to_path.get(slot_to_id[slot])
             if img_path and img_path.exists():
                 c.drawImage(str(img_path), x - BLEED, y - BLEED, width=IMAGE_W, height=IMAGE_H)
+
+    if cut_line_over_cards:
+        _draw_crop_marks(c, color_rgb, cut_line_style, cut_line_width)
 
 
 # Cap each generated PDF at 500 MB on disk (decimal MB, as reported by file
@@ -168,6 +208,10 @@ def generate(
     progress_callback=None,
     cancel_event: Event | None = None,
     fronts_only: bool = False,
+    cut_line_color: str = DEFAULT_CUT_LINE_COLOR,
+    cut_line_style: str = DEFAULT_CUT_LINE_STYLE,
+    cut_line_width: float = DEFAULT_CUT_LINE_WIDTH,
+    cut_line_over_cards: bool = DEFAULT_CUT_LINE_OVER_CARDS,
 ) -> list[Path]:
     """Generate one or more PDFs in `output_dir`. A new chunk starts after
     every front/back pair whose addition would push the cumulative image
@@ -228,7 +272,17 @@ def generate(
             pair_no += 1
             padded = page_slots + [None] * (CARDS_PER_PAGE - len(page_slots))
 
-            _draw_page(c, padded, id_to_path, front_slot_to_id, page_label=str(pair_no))
+            _draw_page(
+                c,
+                padded,
+                id_to_path,
+                front_slot_to_id,
+                page_label=str(pair_no),
+                cut_line_color=cut_line_color,
+                cut_line_style=cut_line_style,
+                cut_line_width=cut_line_width,
+                cut_line_over_cards=cut_line_over_cards,
+            )
             c.showPage()
 
             if not fronts_only:
@@ -236,7 +290,17 @@ def generate(
                 for row in range(ROWS):
                     mirrored.extend(reversed(padded[row * COLS : (row + 1) * COLS]))
 
-                _draw_page(c, mirrored, id_to_path, back_slot_to_id, page_label=f"{pair_no}B")
+                _draw_page(
+                    c,
+                    mirrored,
+                    id_to_path,
+                    back_slot_to_id,
+                    page_label=f"{pair_no}B",
+                    cut_line_color=cut_line_color,
+                    cut_line_style=cut_line_style,
+                    cut_line_width=cut_line_width,
+                    cut_line_over_cards=cut_line_over_cards,
+                )
                 c.showPage()
 
             done_pairs += 1
