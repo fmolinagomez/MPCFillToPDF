@@ -110,7 +110,7 @@ class TestDownloadCardImages:
         sf._cache.clear()
 
     def test_file_cache_prevents_redownload(self, tmp_path):
-        existing = tmp_path / "ltr_10.jpg"
+        existing = tmp_path / "ltr_10_en_large.jpg"
         existing.write_bytes(b"cached")
         card = DeckCard("Bolt", "ltr", "10", 1, "main")
         with (
@@ -271,3 +271,122 @@ class TestDownloadCardImagesNameResolution:
 
             download_card_images(card, tmp_path)
         mock_name.assert_not_called()
+
+
+class TestFetchCardLanguageAndQuality:
+    def setup_method(self):
+        import src.scryfall as sf
+        sf._cache.clear()
+
+    def test_fetch_card_png_quality(self):
+        json_data = {
+            "image_uris": {
+                "large": "https://cards.scryfall.io/large/front/0/0/abc.jpg",
+                "png": "https://cards.scryfall.io/png/front/0/0/abc.png",
+            }
+        }
+        with patch("src.scryfall._throttled_get", return_value=_mock_resp(json_data)) as mock_get:
+            card = fetch_card("ltr", "152", quality="png")
+        assert card.front_url == "https://cards.scryfall.io/png/front/0/0/abc.png"
+
+    def test_fetch_card_spanish_exists(self):
+        json_data = {
+            "image_uris": {
+                "large": "https://cards.scryfall.io/large/front/0/0/es.jpg",
+            }
+        }
+        with patch("src.scryfall._throttled_get", return_value=_mock_resp(json_data)) as mock_get:
+            card = fetch_card("ltr", "152", lang="es")
+        assert card.front_url == "https://cards.scryfall.io/large/front/0/0/es.jpg"
+        mock_get.assert_called_once_with("https://api.scryfall.com/cards/ltr/152/es")
+
+    def test_fetch_card_spanish_missing_fallback_english(self):
+        import requests as req
+        err_404 = req.HTTPError(response=MagicMock(status_code=404))
+
+        def side_effect(url, params=None):
+            if "/es" in url:
+                raise err_404
+            return _mock_resp(_NORMAL_CARD_JSON)
+
+        with patch("src.scryfall._throttled_get", side_effect=side_effect) as mock_get:
+            card = fetch_card("ltr", "152", lang="es", fail_policy="english")
+
+        assert card.front_url == "https://cards.scryfall.io/large/front/0/0/abc.jpg"
+        assert mock_get.call_count == 2
+
+    def test_fetch_card_spanish_missing_fallback_alternative_found(self):
+        import requests as req
+        err_404 = req.HTTPError(response=MagicMock(status_code=404))
+
+        en_json = {
+            "oracle_id": "dummy-uuid",
+            "image_uris": {
+                "large": "https://cards.scryfall.io/large/front/0/0/en.jpg",
+            }
+        }
+        search_json = {
+            "data": [
+                {
+                    "image_uris": {
+                        "large": "https://cards.scryfall.io/large/front/0/0/alt_es.jpg",
+                    }
+                }
+            ]
+        }
+
+        def side_effect(url, params=None):
+            if "/es" in url:
+                raise err_404
+            elif "cards/search" in url:
+                assert params == {"q": "oracle_id:dummy-uuid lang:es"}
+                return _mock_resp(search_json)
+            else:
+                return _mock_resp(en_json)
+
+        with patch("src.scryfall._throttled_get", side_effect=side_effect) as mock_get:
+            card = fetch_card("ltr", "152", lang="es", fail_policy="alternative")
+
+        assert card.front_url == "https://cards.scryfall.io/large/front/0/0/alt_es.jpg"
+        assert mock_get.call_count == 3
+
+    def test_fetch_card_spanish_missing_fallback_alternative_not_found(self):
+        import requests as req
+        err_404 = req.HTTPError(response=MagicMock(status_code=404))
+
+        en_json = {
+            "oracle_id": "dummy-uuid",
+            "image_uris": {
+                "large": "https://cards.scryfall.io/large/front/0/0/en.jpg",
+            }
+        }
+        search_json = {
+            "data": []
+        }
+
+        def side_effect(url, params=None):
+            if "/es" in url:
+                raise err_404
+            elif "cards/search" in url:
+                return _mock_resp(search_json)
+            else:
+                return _mock_resp(en_json)
+
+        with patch("src.scryfall._throttled_get", side_effect=side_effect) as mock_get:
+            card = fetch_card("ltr", "152", lang="es", fail_policy="alternative")
+
+        assert card.front_url == "https://cards.scryfall.io/large/front/0/0/en.jpg"
+
+    def test_download_card_images_custom_filename(self, tmp_path):
+        card = DeckCard("Bolt", "ltr", "152", 1, "main")
+        with (
+            patch(
+                "src.scryfall.fetch_card",
+                return_value=ScryfallCard("https://example.com/img.jpg", None),
+            ),
+            patch("src.scryfall._throttled_get", return_value=_mock_resp(_NORMAL_CARD_JSON)),
+        ):
+            from src.scryfall import download_card_images
+            front, back = download_card_images(card, tmp_path, lang="es", quality="png")
+
+        assert front.name == "ltr_152_es_png.jpg"

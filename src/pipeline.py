@@ -678,6 +678,9 @@ def run_deck_url(
     cancel_event: Event | None = None,
     include_sideboard: bool = False,
     fronts_only: bool = False,
+    lang: str = "en",
+    quality: str = "large",
+    fail_policy: str = "english",
 ) -> list[Path]:
     """Fetch a deck from Moxfield/Archidekt, download images from Scryfall, generate PDF(s).
 
@@ -705,7 +708,15 @@ def run_deck_url(
         progress_callback(Stage.DOWNLOAD, 0, len(cards))
 
     try:
-        dl_results = download_deck_images(cards, scryfall_dir, _dl_progress, cancel_event)
+        dl_results = download_deck_images(
+            cards,
+            scryfall_dir,
+            _dl_progress,
+            cancel_event,
+            lang=lang,
+            quality=quality,
+            fail_policy=fail_policy,
+        )
     except ScryfallError as exc:
         raise ValueError(f"Error al descargar imágenes de Scryfall: {exc}") from exc
 

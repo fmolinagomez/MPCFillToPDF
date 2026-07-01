@@ -34,7 +34,7 @@ SCRYFALL_THREADS = 5
 _rate_lock = threading.Lock()
 _last_request_time: float = 0.0
 
-_cache: dict[tuple[str, str], ScryfallCard] = {}
+_cache: dict[tuple[str, str, str, str, str], ScryfallCard] = {}
 _cache_lock = threading.Lock()
 
 _name_cache: dict[str, tuple[str, str]] = {}
@@ -93,42 +93,119 @@ def _throttled_get(url: str, params: dict | None = None) -> requests.Response:
     return resp
 
 
-def fetch_card(set_code: str, collector_number: str) -> ScryfallCard:
+def _fetch_raw_card_data(set_code: str, collector_number: str, lang: str | None = None) -> dict:
+    """Get raw JSON data from Scryfall API for set/number/lang."""
+    if lang and lang.lower() != "en":
+        url = f"https://api.scryfall.com/cards/{set_code.lower()}/{collector_number}/{lang.lower()}"
+    else:
+        url = _SCRYFALL_API.format(set_code=set_code.lower(), number=collector_number)
+    resp = _throttled_get(url)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _extract_images(data: dict, quality: str) -> ScryfallCard:
+    """Extract front and back URLs from raw card data based on quality (large or png)."""
+    q = quality if quality in ("large", "png") else "large"
+    if "image_uris" in data:
+        front = data["image_uris"].get(q) or data["image_uris"].get("large", "")
+        if not front:
+            raise ScryfallError("No se encontró imagen de frente en image_uris")
+        return ScryfallCard(front, None)
+    elif "card_faces" in data:
+        faces = data["card_faces"]
+        front = faces[0].get("image_uris", {}).get(q) or faces[0].get("image_uris", {}).get("large", "")
+        back = faces[1].get("image_uris", {}).get(q) or faces[1].get("image_uris", {}).get("large") if len(faces) > 1 else None
+        if not front:
+            raise ScryfallError("No se encontró imagen de frente en card_faces")
+        return ScryfallCard(front, back)
+    else:
+        raise ScryfallError("Formato de respuesta inesperado de Scryfall (falta image_uris o card_faces)")
+
+
+def fetch_card(
+    set_code: str,
+    collector_number: str,
+    lang: str = "en",
+    quality: str = "large",
+    fail_policy: str = "english",
+) -> ScryfallCard:
     """Return front/back image URLs for the given printing from Scryfall."""
-    key = (set_code.lower(), collector_number)
+    lang = lang.lower().strip()
+    quality = quality.lower().strip()
+    fail_policy = fail_policy.lower().strip()
+    key = (set_code.lower(), collector_number, lang, quality, fail_policy)
     with _cache_lock:
         if key in _cache:
             return _cache[key]
 
-    url = _SCRYFALL_API.format(set_code=set_code.lower(), number=collector_number)
-    try:
-        resp = _throttled_get(url)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.HTTPError as exc:
-        raise ScryfallError(
-            f"Carta no encontrada en Scryfall: {set_code}/{collector_number} ({exc})"
-        ) from exc
-    except requests.RequestException as exc:
-        raise ScryfallError(
-            f"Error de conexión con Scryfall ({set_code}/{collector_number}): {exc}"
-        ) from exc
-
-    if "image_uris" in data:
-        result = ScryfallCard(data["image_uris"]["large"], None)
-    elif "card_faces" in data:
-        faces = data["card_faces"]
-        front = faces[0].get("image_uris", {}).get("large", "")
-        back = faces[1].get("image_uris", {}).get("large") if len(faces) > 1 else None
-        if not front:
+    if lang == "en":
+        try:
+            data = _fetch_raw_card_data(set_code, collector_number, lang="en")
+            result = _extract_images(data, quality)
+        except requests.HTTPError as exc:
             raise ScryfallError(
-                f"No se encontró imagen de frente para {set_code}/{collector_number}"
-            )
-        result = ScryfallCard(front, back)
+                f"Carta no encontrada en Scryfall: {set_code}/{collector_number} ({exc})"
+            ) from exc
+        except requests.RequestException as exc:
+            raise ScryfallError(
+                f"Error de conexión con Scryfall ({set_code}/{collector_number}): {exc}"
+            ) from exc
     else:
-        raise ScryfallError(
-            f"Formato de respuesta inesperado de Scryfall para {set_code}/{collector_number}"
-        )
+        try:
+            data = _fetch_raw_card_data(set_code, collector_number, lang=lang)
+            result = _extract_images(data, quality)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                _log.info(
+                    "Carta no encontrada en idioma %s: %s/%s. Aplicando política: %s",
+                    lang, set_code, collector_number, fail_policy
+                )
+                if fail_policy == "alternative":
+                    try:
+                        en_data = _fetch_raw_card_data(set_code, collector_number, lang="en")
+                        oracle_id = en_data.get("oracle_id")
+                        if oracle_id:
+                            search_url = "https://api.scryfall.com/cards/search"
+                            search_params = {"q": f"oracle_id:{oracle_id} lang:{lang}"}
+                            search_resp = _throttled_get(search_url, params=search_params)
+                            if search_resp.status_code == 200:
+                                search_data = search_resp.json()
+                                results = search_data.get("data", [])
+                                if results:
+                                    result = _extract_images(results[0], quality)
+                                    with _cache_lock:
+                                        _cache[key] = result
+                                    return result
+                        result = _extract_images(en_data, quality)
+                    except Exception as alt_exc:
+                        _log.warning(
+                            "Fallo al buscar alternativa en %s para %s/%s (%s). Usando inglés.",
+                            lang, set_code, collector_number, alt_exc
+                        )
+                        try:
+                            en_data = _fetch_raw_card_data(set_code, collector_number, lang="en")
+                            result = _extract_images(en_data, quality)
+                        except Exception as final_exc:
+                            raise ScryfallError(
+                                f"Error al descargar versión en inglés tras fallo en idioma: {final_exc}"
+                            ) from final_exc
+                else:
+                    try:
+                        en_data = _fetch_raw_card_data(set_code, collector_number, lang="en")
+                        result = _extract_images(en_data, quality)
+                    except Exception as final_exc:
+                        raise ScryfallError(
+                            f"Error al descargar versión en inglés de {set_code}/{collector_number}: {final_exc}"
+                        ) from final_exc
+            else:
+                raise ScryfallError(
+                    f"Error HTTP al consultar Scryfall ({set_code}/{collector_number}/{lang}): {exc}"
+                ) from exc
+        except requests.RequestException as exc:
+            raise ScryfallError(
+                f"Error de conexión con Scryfall ({set_code}/{collector_number}/{lang}): {exc}"
+            ) from exc
 
     with _cache_lock:
         _cache[key] = result
@@ -162,15 +239,21 @@ def _ext_from_url(url: str) -> str:
     return f".{m.group(1).lower()}" if m else ".jpg"
 
 
-def download_card_images(card: DeckCard, dest_dir: Path) -> tuple[Path, Path | None]:
+def download_card_images(
+    card: DeckCard,
+    dest_dir: Path,
+    lang: str = "en",
+    quality: str = "large",
+    fail_policy: str = "english",
+) -> tuple[Path, Path | None]:
     """Download front and (for MDFCs) back images. Returns (front_path, back_path|None)."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     set_code = card.set_code
     collector_number = card.collector_number
     if not set_code or not collector_number:
         set_code, collector_number = fetch_card_by_name(card.name)
-    scryfall = fetch_card(set_code, collector_number)
-    slug = f"{set_code.lower()}_{collector_number}"
+    scryfall = fetch_card(set_code, collector_number, lang=lang, quality=quality, fail_policy=fail_policy)
+    slug = f"{set_code.lower()}_{collector_number}_{lang}_{quality}"
 
     front_ext = _ext_from_url(scryfall.front_url)
     front_path = dest_dir / f"{slug}{front_ext}"
@@ -198,6 +281,9 @@ def download_deck_images(
     dest_dir: Path,
     progress_cb: ProgressCallback = None,
     cancel_event: Event | None = None,
+    lang: str = "en",
+    quality: str = "large",
+    fail_policy: str = "english",
 ) -> list[tuple[DeckCard, Path, Path | None]]:
     """Download images for all unique cards in parallel.
 
@@ -209,7 +295,8 @@ def download_deck_images(
 
     with ThreadPoolExecutor(max_workers=SCRYFALL_THREADS) as executor:
         futures = {
-            executor.submit(download_card_images, c, dest_dir): (i, c) for i, c in enumerate(cards)
+            executor.submit(download_card_images, c, dest_dir, lang, quality, fail_policy): (i, c)
+            for i, c in enumerate(cards)
         }
         try:
             for future in as_completed(futures):

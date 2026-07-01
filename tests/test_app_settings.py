@@ -115,6 +115,48 @@ class TestLoadSettings:
     def test_cut_line_over_backs_default_is_true(self, tmp_path):
         assert load_settings(tmp_path).cut_line_over_backs == DEFAULT_CUT_LINE_OVER_BACKS
 
+    def test_scryfall_lang_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_lang="es")
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_lang == "es"
+
+    def test_scryfall_lang_default_is_en(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_lang == "en"
+
+    def test_scryfall_lang_invalid_falls_back(self, tmp_path):
+        settings_file = tmp_path / "MPCFillToPDF" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(json.dumps({"scryfall_lang": "invalid"}), encoding="utf-8")
+        assert load_settings(tmp_path).scryfall_lang == "en"
+
+    def test_scryfall_quality_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_quality="png")
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_quality == "png"
+
+    def test_scryfall_quality_default_is_large(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_quality == "large"
+
+    def test_scryfall_quality_invalid_falls_back(self, tmp_path):
+        settings_file = tmp_path / "MPCFillToPDF" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(json.dumps({"scryfall_quality": "invalid"}), encoding="utf-8")
+        assert load_settings(tmp_path).scryfall_quality == "large"
+
+    def test_scryfall_fail_policy_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_fail_policy="alternative")
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_fail_policy == "alternative"
+
+    def test_scryfall_fail_policy_default_is_english(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_fail_policy == "english"
+
+    def test_scryfall_fail_policy_invalid_falls_back(self, tmp_path):
+        settings_file = tmp_path / "MPCFillToPDF" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(json.dumps({"scryfall_fail_policy": "invalid"}), encoding="utf-8")
+        assert load_settings(tmp_path).scryfall_fail_policy == "english"
+
 
 class TestSaveSettings:
     def test_creates_parent_dirs(self, tmp_path):

@@ -970,7 +970,13 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     self.events.put(("progress", "download", done, total, mtg_label))
 
                 dl_results = scryfall_download(
-                    mtg_cards_all, scryfall_dir, _mtg_prog, cancel_event=self.cancel_event
+                    mtg_cards_all,
+                    scryfall_dir,
+                    _mtg_prog,
+                    cancel_event=self.cancel_event,
+                    lang=self._settings.scryfall_lang,
+                    quality=self._settings.scryfall_quality,
+                    fail_policy=self._settings.scryfall_fail_policy,
                 )
 
                 if self.cancel_event.is_set():

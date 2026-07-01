@@ -12,6 +12,10 @@ DEFAULT_CUT_LINE_OVER_CARDS = False
 DEFAULT_CUT_LINE_OVER_FRONTS = True
 DEFAULT_CUT_LINE_OVER_BACKS = True
 
+DEFAULT_SCRYFALL_LANG = "en"
+DEFAULT_SCRYFALL_QUALITY = "large"
+DEFAULT_SCRYFALL_FAIL_POLICY = "english"
+
 
 @dataclass
 class AppSettings:
@@ -22,6 +26,9 @@ class AppSettings:
     cut_line_over_cards: bool = DEFAULT_CUT_LINE_OVER_CARDS
     cut_line_over_fronts: bool = DEFAULT_CUT_LINE_OVER_FRONTS
     cut_line_over_backs: bool = DEFAULT_CUT_LINE_OVER_BACKS
+    scryfall_lang: str = DEFAULT_SCRYFALL_LANG
+    scryfall_quality: str = DEFAULT_SCRYFALL_QUALITY
+    scryfall_fail_policy: str = DEFAULT_SCRYFALL_FAIL_POLICY
 
 
 def _settings_path(base_dir: Path) -> Path:
@@ -55,6 +62,19 @@ def load_settings(base_dir: Path) -> AppSettings:
         over_cards = bool(data.get("cut_line_over_cards", DEFAULT_CUT_LINE_OVER_CARDS))
         over_fronts = bool(data.get("cut_line_over_fronts", DEFAULT_CUT_LINE_OVER_FRONTS))
         over_backs = bool(data.get("cut_line_over_backs", DEFAULT_CUT_LINE_OVER_BACKS))
+
+        sf_lang = str(data.get("scryfall_lang", DEFAULT_SCRYFALL_LANG)).strip().lower()
+        if sf_lang not in ("en", "es"):
+            sf_lang = DEFAULT_SCRYFALL_LANG
+
+        sf_quality = str(data.get("scryfall_quality", DEFAULT_SCRYFALL_QUALITY)).strip().lower()
+        if sf_quality not in ("large", "png"):
+            sf_quality = DEFAULT_SCRYFALL_QUALITY
+
+        sf_fail_policy = str(data.get("scryfall_fail_policy", DEFAULT_SCRYFALL_FAIL_POLICY)).strip().lower()
+        if sf_fail_policy not in ("english", "alternative"):
+            sf_fail_policy = DEFAULT_SCRYFALL_FAIL_POLICY
+
         return AppSettings(
             output_dir=output_dir,
             cut_line_color=color,
@@ -63,6 +83,9 @@ def load_settings(base_dir: Path) -> AppSettings:
             cut_line_over_cards=over_cards,
             cut_line_over_fronts=over_fronts,
             cut_line_over_backs=over_backs,
+            scryfall_lang=sf_lang,
+            scryfall_quality=sf_quality,
+            scryfall_fail_policy=sf_fail_policy,
         )
     except Exception as exc:
         _log.warning("Could not load settings.json: %s", exc)
@@ -82,6 +105,9 @@ def save_settings(settings: AppSettings, base_dir: Path) -> None:
             "cut_line_over_cards": settings.cut_line_over_cards,
             "cut_line_over_fronts": settings.cut_line_over_fronts,
             "cut_line_over_backs": settings.cut_line_over_backs,
+            "scryfall_lang": settings.scryfall_lang,
+            "scryfall_quality": settings.scryfall_quality,
+            "scryfall_fail_policy": settings.scryfall_fail_policy,
         }
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as exc:

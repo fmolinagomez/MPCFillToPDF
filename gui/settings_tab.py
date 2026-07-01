@@ -14,6 +14,9 @@ from src.app_settings import (
     DEFAULT_CUT_LINE_OVER_FRONTS,
     DEFAULT_CUT_LINE_STYLE,
     DEFAULT_CUT_LINE_WIDTH,
+    DEFAULT_SCRYFALL_LANG,
+    DEFAULT_SCRYFALL_QUALITY,
+    DEFAULT_SCRYFALL_FAIL_POLICY,
     save_settings,
 )
 
@@ -45,13 +48,23 @@ class SettingsTabMixin:
 
         ttk.Separator(outer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 12))
 
-        # ── Líneas de corte ──────────────────────────────────────────────────
-        ttk.Label(outer, text="Líneas de corte", font=("Segoe UI", 10, "bold")).pack(
+        # Contenedor de dos columnas
+        cols_frame = ttk.Frame(outer)
+        cols_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 12))
+
+        left_col = ttk.Frame(cols_frame)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 12))
+
+        right_col = ttk.Frame(cols_frame)
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
+
+        # ── Líneas de corte (Columna Izquierda) ──────────────────────────────
+        ttk.Label(left_col, text="Líneas de corte", font=("Segoe UI", 10, "bold")).pack(
             anchor=tk.W, pady=(0, 6)
         )
 
         # Color
-        color_row = ttk.Frame(outer)
+        color_row = ttk.Frame(left_col)
         color_row.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(color_row, text="Color:").pack(side=tk.LEFT)
         self._color_swatch = tk.Label(
@@ -71,7 +84,7 @@ class SettingsTabMixin:
         )
 
         # Grosor
-        width_row = ttk.Frame(outer)
+        width_row = ttk.Frame(left_col)
         width_row.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(width_row, text="Grosor (pt):").pack(side=tk.LEFT)
         self._settings_width_var = tk.StringVar(value=f"{self._settings.cut_line_width:.1f}")
@@ -89,9 +102,9 @@ class SettingsTabMixin:
         self._settings_width_var.trace_add("write", self._on_settings_width_trace)
 
         # Estilo
-        ttk.Label(outer, text="Estilo:").pack(anchor=tk.W, pady=(6, 2))
+        ttk.Label(left_col, text="Estilo:").pack(anchor=tk.W, pady=(6, 2))
         self._settings_style_var = tk.StringVar(value=self._settings.cut_line_style)
-        self._style_frame = ttk.Frame(outer)
+        self._style_frame = ttk.Frame(left_col)
         style_frame = self._style_frame
         style_frame.pack(anchor=tk.W, pady=(0, 0))
         ttk.Radiobutton(
@@ -109,7 +122,7 @@ class SettingsTabMixin:
             command=self._on_settings_style_changed,
         ).pack(anchor=tk.W)
 
-        self._over_cards_sub_frame = ttk.Frame(outer)
+        self._over_cards_sub_frame = ttk.Frame(left_col)
         self._settings_over_fronts_var = tk.BooleanVar(value=self._settings.cut_line_over_fronts)
         self._settings_over_backs_var = tk.BooleanVar(value=self._settings.cut_line_over_backs)
         ttk.Checkbutton(
@@ -126,6 +139,88 @@ class SettingsTabMixin:
         ).pack(anchor=tk.W)
         if self._settings.cut_line_style == "full":
             self._over_cards_sub_frame.pack(anchor=tk.W, padx=(20, 0), pady=(4, 0))
+
+        # ── Configuración avanzada de Scryfall (Columna Derecha) ─────────────
+        sf_frame = ttk.LabelFrame(right_col, text=" Configuración avanzada de Scryfall ", padding=10)
+        sf_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Idioma preferido
+        lang_row = ttk.Frame(sf_frame)
+        lang_row.pack(fill=tk.X, pady=4)
+        ttk.Label(lang_row, text="Idioma preferido:").pack(side=tk.LEFT)
+
+        self._scryfall_lang_options = ["Español", "Inglés"]
+        self._scryfall_lang_map = {"Español": "es", "Inglés": "en"}
+        self._scryfall_lang_inv_map = {"es": "Español", "en": "Inglés"}
+
+        initial_lang_name = self._scryfall_lang_inv_map.get(self._settings.scryfall_lang, "Inglés")
+        self._settings_sf_lang_var = tk.StringVar(value=initial_lang_name)
+
+        self._sf_lang_combo = ttk.Combobox(
+            lang_row,
+            values=self._scryfall_lang_options,
+            textvariable=self._settings_sf_lang_var,
+            state="readonly",
+            width=15,
+        )
+        self._sf_lang_combo.pack(side=tk.LEFT, padx=(8, 0))
+        self._sf_lang_combo.bind("<<ComboboxSelected>>", self._on_sf_lang_changed)
+
+        # Calidad de imagen
+        quality_row = ttk.Frame(sf_frame)
+        quality_row.pack(fill=tk.X, pady=4)
+        ttk.Label(quality_row, text="Calidad de imagen:").pack(side=tk.LEFT)
+
+        self._scryfall_quality_options = ["Large (Equilibrada)", "PNG (Alta calidad)"]
+        self._scryfall_quality_map = {"Large (Equilibrada)": "large", "PNG (Alta calidad)": "png"}
+        self._scryfall_quality_inv_map = {"large": "Large (Equilibrada)", "png": "PNG (Alta calidad)"}
+
+        initial_quality_name = self._scryfall_quality_inv_map.get(self._settings.scryfall_quality, "Large (Equilibrada)")
+        self._settings_sf_quality_var = tk.StringVar(value=initial_quality_name)
+
+        self._sf_quality_combo = ttk.Combobox(
+            quality_row,
+            values=self._scryfall_quality_options,
+            textvariable=self._settings_sf_quality_var,
+            state="readonly",
+            width=20,
+        )
+        self._sf_quality_combo.pack(side=tk.LEFT, padx=(8, 0))
+        self._sf_quality_combo.bind("<<ComboboxSelected>>", self._on_sf_quality_changed)
+
+        # Política de error
+        policy_row = ttk.Frame(sf_frame)
+        policy_row.pack(fill=tk.X, pady=4)
+        self._sf_policy_label = ttk.Label(policy_row, text="En caso de fallo en idioma preferido:")
+        self._sf_policy_label.pack(anchor=tk.W)
+
+        self._scryfall_policy_options = [
+            "Descargar en inglés",
+            "Buscar versión alternativa en idioma preferido y si no descargar en inglés"
+        ]
+        self._scryfall_policy_map = {
+            "Descargar en inglés": "english",
+            "Buscar versión alternativa en idioma preferido y si no descargar en inglés": "alternative"
+        }
+        self._scryfall_policy_inv_map = {
+            "english": "Descargar en inglés",
+            "alternative": "Buscar versión alternativa en idioma preferido y si no descargar en inglés"
+        }
+
+        initial_policy_name = self._scryfall_policy_inv_map.get(self._settings.scryfall_fail_policy, "Descargar en inglés")
+        self._settings_sf_policy_var = tk.StringVar(value=initial_policy_name)
+
+        self._sf_policy_combo = ttk.Combobox(
+            policy_row,
+            values=self._scryfall_policy_options,
+            textvariable=self._settings_sf_policy_var,
+            state="readonly",
+        )
+        self._sf_policy_combo.pack(fill=tk.X, pady=(2, 0))
+        self._sf_policy_combo.bind("<<ComboboxSelected>>", self._on_sf_policy_changed)
+
+        # Configurar estado inicial según idioma
+        self._update_sf_policy_state()
 
         ttk.Separator(outer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(8, 12))
 
@@ -203,6 +298,35 @@ class SettingsTabMixin:
         self._settings.cut_line_over_backs = self._settings_over_backs_var.get()
         self._persist_settings()
 
+    def _update_sf_policy_state(self) -> None:
+        """Enable or disable the policy selection depending on the preferred language."""
+        lang_val = self._scryfall_lang_map.get(self._settings_sf_lang_var.get(), "en")
+        if lang_val == "en":
+            self._sf_policy_combo.configure(state="disabled")
+            self._sf_policy_label.configure(foreground="#888")
+        else:
+            self._sf_policy_combo.configure(state="readonly")
+            self._sf_policy_label.configure(foreground="")
+
+    def _on_sf_lang_changed(self, _event=None) -> None:
+        lang_name = self._settings_sf_lang_var.get()
+        lang_code = self._scryfall_lang_map.get(lang_name, "en")
+        self._settings.scryfall_lang = lang_code
+        self._update_sf_policy_state()
+        self._persist_settings()
+
+    def _on_sf_quality_changed(self, _event=None) -> None:
+        quality_name = self._settings_sf_quality_var.get()
+        quality_code = self._scryfall_quality_map.get(quality_name, "large")
+        self._settings.scryfall_quality = quality_code
+        self._persist_settings()
+
+    def _on_sf_policy_changed(self, _event=None) -> None:
+        policy_name = self._settings_sf_policy_var.get()
+        policy_code = self._scryfall_policy_map.get(policy_name, "english")
+        self._settings.scryfall_fail_policy = policy_code
+        self._persist_settings()
+
     def _settings_reset(self) -> None:
         self._settings.output_dir = None
         self._settings.cut_line_color = DEFAULT_CUT_LINE_COLOR
@@ -211,6 +335,10 @@ class SettingsTabMixin:
         self._settings.cut_line_over_cards = DEFAULT_CUT_LINE_OVER_CARDS
         self._settings.cut_line_over_fronts = DEFAULT_CUT_LINE_OVER_FRONTS
         self._settings.cut_line_over_backs = DEFAULT_CUT_LINE_OVER_BACKS
+
+        self._settings.scryfall_lang = DEFAULT_SCRYFALL_LANG
+        self._settings.scryfall_quality = DEFAULT_SCRYFALL_QUALITY
+        self._settings.scryfall_fail_policy = DEFAULT_SCRYFALL_FAIL_POLICY
 
         self._custom_output_dir = None
         self.out_dir_var.set(str(output_dir()))
@@ -222,6 +350,12 @@ class SettingsTabMixin:
         self._settings_over_fronts_var.set(DEFAULT_CUT_LINE_OVER_FRONTS)
         self._settings_over_backs_var.set(DEFAULT_CUT_LINE_OVER_BACKS)
         self._over_cards_sub_frame.pack_forget()
+
+        self._settings_sf_lang_var.set(self._scryfall_lang_inv_map.get(DEFAULT_SCRYFALL_LANG))
+        self._settings_sf_quality_var.set(self._scryfall_quality_inv_map.get(DEFAULT_SCRYFALL_QUALITY))
+        self._settings_sf_policy_var.set(self._scryfall_policy_inv_map.get(DEFAULT_SCRYFALL_FAIL_POLICY))
+        self._update_sf_policy_state()
+
         self._persist_settings()
 
     def _persist_settings(self) -> None:
