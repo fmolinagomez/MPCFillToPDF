@@ -17,6 +17,8 @@ from src.app_settings import (
     DEFAULT_SCRYFALL_LANG,
     DEFAULT_SCRYFALL_QUALITY,
     DEFAULT_SCRYFALL_FAIL_POLICY,
+    DEFAULT_SCRYFALL_QUALITY_CHECK,
+    DEFAULT_SCRYFALL_BLUR_THRESHOLD,
     save_settings,
 )
 
@@ -222,6 +224,35 @@ class SettingsTabMixin:
         # Configurar estado inicial según idioma
         self._update_sf_policy_state()
 
+        # Control de calidad
+        qc_row = ttk.Frame(sf_frame)
+        qc_row.pack(fill=tk.X, pady=4)
+        self._settings_sf_quality_check_var = tk.BooleanVar(value=self._settings.scryfall_quality_check)
+        self._sf_quality_check_cb = ttk.Checkbutton(
+            qc_row,
+            text="Controlar calidad (evitar borrosas)",
+            variable=self._settings_sf_quality_check_var,
+            command=self._on_sf_quality_check_changed,
+        )
+        self._sf_quality_check_cb.pack(anchor=tk.W)
+
+        # Umbral de enfoque (blur threshold)
+        blur_row = ttk.Frame(sf_frame)
+        blur_row.pack(fill=tk.X, pady=4)
+        self._sf_blur_label = ttk.Label(blur_row, text="Umbral de enfoque (blur):")
+        self._sf_blur_label.pack(side=tk.LEFT)
+        self._settings_sf_blur_threshold_var = tk.StringVar(value=f"{self._settings.scryfall_blur_threshold}")
+        self._sf_blur_entry = ttk.Entry(
+            blur_row,
+            textvariable=self._settings_sf_blur_threshold_var,
+            width=8,
+        )
+        self._sf_blur_entry.pack(side=tk.LEFT, padx=(8, 0))
+        self._settings_sf_blur_threshold_var.trace_add("write", self._on_sf_blur_threshold_trace)
+
+        # Configurar estado inicial de calidad
+        self._update_sf_quality_check_state()
+
         ttk.Separator(outer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(8, 12))
 
         # ── Botón de restablecer ─────────────────────────────────────────────
@@ -327,6 +358,28 @@ class SettingsTabMixin:
         self._settings.scryfall_fail_policy = policy_code
         self._persist_settings()
 
+    def _update_sf_quality_check_state(self) -> None:
+        if self._settings_sf_quality_check_var.get():
+            self._sf_blur_entry.configure(state="normal")
+            self._sf_blur_label.configure(foreground="")
+        else:
+            self._sf_blur_entry.configure(state="disabled")
+            self._sf_blur_label.configure(foreground="#888")
+
+    def _on_sf_quality_check_changed(self) -> None:
+        self._settings.scryfall_quality_check = self._settings_sf_quality_check_var.get()
+        self._update_sf_quality_check_state()
+        self._persist_settings()
+
+    def _on_sf_blur_threshold_trace(self, *_) -> None:
+        try:
+            val = float(self._settings_sf_blur_threshold_var.get().replace(",", "."))
+            if val >= 0.0:
+                self._settings.scryfall_blur_threshold = val
+                self._persist_settings()
+        except ValueError:
+            pass
+
     def _settings_reset(self) -> None:
         self._settings.output_dir = None
         self._settings.cut_line_color = DEFAULT_CUT_LINE_COLOR
@@ -339,6 +392,8 @@ class SettingsTabMixin:
         self._settings.scryfall_lang = DEFAULT_SCRYFALL_LANG
         self._settings.scryfall_quality = DEFAULT_SCRYFALL_QUALITY
         self._settings.scryfall_fail_policy = DEFAULT_SCRYFALL_FAIL_POLICY
+        self._settings.scryfall_quality_check = DEFAULT_SCRYFALL_QUALITY_CHECK
+        self._settings.scryfall_blur_threshold = DEFAULT_SCRYFALL_BLUR_THRESHOLD
 
         self._custom_output_dir = None
         self.out_dir_var.set(str(output_dir()))
@@ -355,6 +410,10 @@ class SettingsTabMixin:
         self._settings_sf_quality_var.set(self._scryfall_quality_inv_map.get(DEFAULT_SCRYFALL_QUALITY))
         self._settings_sf_policy_var.set(self._scryfall_policy_inv_map.get(DEFAULT_SCRYFALL_FAIL_POLICY))
         self._update_sf_policy_state()
+
+        self._settings_sf_quality_check_var.set(DEFAULT_SCRYFALL_QUALITY_CHECK)
+        self._settings_sf_blur_threshold_var.set(f"{DEFAULT_SCRYFALL_BLUR_THRESHOLD}")
+        self._update_sf_quality_check_state()
 
         self._persist_settings()
 

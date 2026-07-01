@@ -977,6 +977,8 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     lang=self._settings.scryfall_lang,
                     quality=self._settings.scryfall_quality,
                     fail_policy=self._settings.scryfall_fail_policy,
+                    quality_check=self._settings.scryfall_quality_check,
+                    blur_threshold=self._settings.scryfall_blur_threshold,
                 )
 
                 if self.cancel_event.is_set():

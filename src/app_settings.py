@@ -15,6 +15,8 @@ DEFAULT_CUT_LINE_OVER_BACKS = True
 DEFAULT_SCRYFALL_LANG = "en"
 DEFAULT_SCRYFALL_QUALITY = "large"
 DEFAULT_SCRYFALL_FAIL_POLICY = "english"
+DEFAULT_SCRYFALL_QUALITY_CHECK = True
+DEFAULT_SCRYFALL_BLUR_THRESHOLD = 100.0
 
 
 @dataclass
@@ -29,6 +31,8 @@ class AppSettings:
     scryfall_lang: str = DEFAULT_SCRYFALL_LANG
     scryfall_quality: str = DEFAULT_SCRYFALL_QUALITY
     scryfall_fail_policy: str = DEFAULT_SCRYFALL_FAIL_POLICY
+    scryfall_quality_check: bool = DEFAULT_SCRYFALL_QUALITY_CHECK
+    scryfall_blur_threshold: float = DEFAULT_SCRYFALL_BLUR_THRESHOLD
 
 
 def _settings_path(base_dir: Path) -> Path:
@@ -75,6 +79,13 @@ def load_settings(base_dir: Path) -> AppSettings:
         if sf_fail_policy not in ("english", "alternative"):
             sf_fail_policy = DEFAULT_SCRYFALL_FAIL_POLICY
 
+        sf_quality_check = bool(data.get("scryfall_quality_check", DEFAULT_SCRYFALL_QUALITY_CHECK))
+        try:
+            sf_blur_threshold = float(data.get("scryfall_blur_threshold", DEFAULT_SCRYFALL_BLUR_THRESHOLD))
+            sf_blur_threshold = max(0.0, sf_blur_threshold)
+        except (TypeError, ValueError):
+            sf_blur_threshold = DEFAULT_SCRYFALL_BLUR_THRESHOLD
+
         return AppSettings(
             output_dir=output_dir,
             cut_line_color=color,
@@ -86,6 +97,8 @@ def load_settings(base_dir: Path) -> AppSettings:
             scryfall_lang=sf_lang,
             scryfall_quality=sf_quality,
             scryfall_fail_policy=sf_fail_policy,
+            scryfall_quality_check=sf_quality_check,
+            scryfall_blur_threshold=sf_blur_threshold,
         )
     except Exception as exc:
         _log.warning("Could not load settings.json: %s", exc)
@@ -108,6 +121,8 @@ def save_settings(settings: AppSettings, base_dir: Path) -> None:
             "scryfall_lang": settings.scryfall_lang,
             "scryfall_quality": settings.scryfall_quality,
             "scryfall_fail_policy": settings.scryfall_fail_policy,
+            "scryfall_quality_check": settings.scryfall_quality_check,
+            "scryfall_blur_threshold": settings.scryfall_blur_threshold,
         }
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")

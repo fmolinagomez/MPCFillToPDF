@@ -679,6 +679,8 @@ def run_deck_url(
     lang: str = "en",
     quality: str = "large",
     fail_policy: str = "english",
+    quality_check: bool = True,
+    blur_threshold: float = 100.0,
 ) -> list[Path]:
     """Fetch a deck from Moxfield/Archidekt, download images from Scryfall, generate PDF(s).
 
@@ -714,6 +716,8 @@ def run_deck_url(
             lang=lang,
             quality=quality,
             fail_policy=fail_policy,
+            quality_check=quality_check,
+            blur_threshold=blur_threshold,
         )
     except ScryfallError as exc:
         raise ValueError(f"Error al descargar imágenes de Scryfall: {exc}") from exc

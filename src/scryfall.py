@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 
+import cv2
 import requests
 
 from src.cancellation import Cancelled
@@ -49,6 +50,7 @@ class ScryfallError(Exception):
 class ScryfallCard:
     front_url: str
     back_url: str | None
+    oracle_id: str | None = None
 
 
 def _throttled_get(url: str, params: dict | None = None) -> requests.Response:
@@ -107,18 +109,19 @@ def _fetch_raw_card_data(set_code: str, collector_number: str, lang: str | None 
 def _extract_images(data: dict, quality: str) -> ScryfallCard:
     """Extract front and back URLs from raw card data based on quality (large or png)."""
     q = quality if quality in ("large", "png") else "large"
+    oracle_id = data.get("oracle_id")
     if "image_uris" in data:
         front = data["image_uris"].get(q) or data["image_uris"].get("large", "")
         if not front:
             raise ScryfallError("No se encontró imagen de frente en image_uris")
-        return ScryfallCard(front, None)
+        return ScryfallCard(front, None, oracle_id)
     elif "card_faces" in data:
         faces = data["card_faces"]
         front = faces[0].get("image_uris", {}).get(q) or faces[0].get("image_uris", {}).get("large", "")
         back = faces[1].get("image_uris", {}).get(q) or faces[1].get("image_uris", {}).get("large") if len(faces) > 1 else None
         if not front:
             raise ScryfallError("No se encontró imagen de frente en card_faces")
-        return ScryfallCard(front, back)
+        return ScryfallCard(front, back, oracle_id)
     else:
         raise ScryfallError("Formato de respuesta inesperado de Scryfall (falta image_uris o card_faces)")
 
@@ -239,12 +242,37 @@ def _ext_from_url(url: str) -> str:
     return f".{m.group(1).lower()}" if m else ".jpg"
 
 
+def _check_image_quality(image_path: Path, threshold: float) -> tuple[bool, float, tuple[int, int]]:
+    """Evaluate if image is sharp and has sufficient print resolution (at least 745x1040).
+    
+    Returns (is_ok, focus_score, (width, height)).
+    """
+    img = cv2.imread(str(image_path))
+    if img is None:
+        return False, 0.0, (0, 0)
+    
+    height, width = img.shape[:2]
+    # Resolution check (standard minimum size for high-quality Scryfall PNGs is 745x1040)
+    if width < 745 or height < 1040:
+        resolution_ok = False
+    else:
+        resolution_ok = True
+        
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    focus_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    
+    is_ok = resolution_ok and (focus_score >= threshold)
+    return is_ok, focus_score, (width, height)
+
+
 def download_card_images(
     card: DeckCard,
     dest_dir: Path,
     lang: str = "en",
     quality: str = "large",
     fail_policy: str = "english",
+    quality_check: bool = True,
+    blur_threshold: float = 100.0,
 ) -> tuple[Path, Path | None]:
     """Download front and (for MDFCs) back images. Returns (front_path, back_path|None)."""
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -253,27 +281,102 @@ def download_card_images(
     if not set_code or not collector_number:
         set_code, collector_number = fetch_card_by_name(card.name)
     scryfall = fetch_card(set_code, collector_number, lang=lang, quality=quality, fail_policy=fail_policy)
-    slug = f"{set_code.lower()}_{collector_number}_{lang}_{quality}"
 
-    front_ext = _ext_from_url(scryfall.front_url)
-    front_path = dest_dir / f"{slug}{front_ext}"
-    if not front_path.exists():
-        _log.info("Descargando imagen: %s", slug)
-        resp = _throttled_get(scryfall.front_url)
-        resp.raise_for_status()
-        front_path.write_bytes(resp.content)
-
-    back_path: Path | None = None
-    if scryfall.back_url:
-        back_ext = _ext_from_url(scryfall.back_url)
-        back_path = dest_dir / f"{slug}_back{back_ext}"
-        if not back_path.exists():
-            _log.info("Descargando reverso MDFC: %s", slug)
-            resp = _throttled_get(scryfall.back_url)
+    def _download_and_check(sc_card: ScryfallCard, s_code: str, col_num: str, l_code: str) -> tuple[Path, Path | None, bool, float, tuple[int, int]]:
+        slug = f"{s_code.lower()}_{col_num}_{l_code}_{quality}"
+        front_ext = _ext_from_url(sc_card.front_url)
+        f_path = dest_dir / f"{slug}{front_ext}"
+        if not f_path.exists():
+            _log.info("Descargando imagen: %s", slug)
+            resp = _throttled_get(sc_card.front_url)
             resp.raise_for_status()
-            back_path.write_bytes(resp.content)
+            f_path.write_bytes(resp.content)
 
-    return front_path, back_path
+        b_path: Path | None = None
+        if sc_card.back_url:
+            back_ext = _ext_from_url(sc_card.back_url)
+            b_path = dest_dir / f"{slug}_back{back_ext}"
+            if not b_path.exists():
+                _log.info("Descargando reverso MDFC: %s", slug)
+                resp = _throttled_get(sc_card.back_url)
+                resp.raise_for_status()
+                b_path.write_bytes(resp.content)
+        
+        if quality_check:
+            is_ok, focus, dims = _check_image_quality(f_path, blur_threshold)
+            return f_path, b_path, is_ok, focus, dims
+        else:
+            return f_path, b_path, True, 0.0, (0, 0)
+
+    # 1. Try initial printing
+    front_path, back_path, is_ok, focus_score, dims = _download_and_check(
+        scryfall, set_code, collector_number, lang
+    )
+    
+    if is_ok or not quality_check:
+        return front_path, back_path
+
+    # Quality check failed! Start fallback flow
+    _log.warning(
+        "Calidad de '%s' (%s/%s) insuficiente (Enfoque: %.1f < %.1f, Res: %dx%d). Buscando alternativas...",
+        card.name, set_code, collector_number, focus_score, blur_threshold, dims[0], dims[1]
+    )
+
+    best_front, best_back, best_score = front_path, back_path, focus_score
+    tested_prints = {(set_code.lower(), collector_number.lower(), lang.lower())}
+    
+    def _get_alternative_prints(query_lang: str) -> list[dict]:
+        if not scryfall.oracle_id:
+            return []
+        try:
+            search_params = {"q": f"oracle_id:{scryfall.oracle_id} lang:{query_lang}", "unique": "prints"}
+            resp = _throttled_get("https://api.scryfall.com/cards/search", params=search_params)
+            if resp.status_code == 200:
+                return resp.json().get("data", [])
+        except Exception as e:
+            _log.warning("Fallo al buscar alternativas para %s en idioma %s: %s", card.name, query_lang, e)
+        return []
+
+    candidate_cards: list[dict] = []
+    if lang.lower() != "en":
+        candidate_cards.extend(_get_alternative_prints(lang))
+        if fail_policy in ("english", "alternative"):
+            candidate_cards.extend(_get_alternative_prints("en"))
+    else:
+        candidate_cards.extend(_get_alternative_prints("en"))
+
+    for cand in candidate_cards:
+        c_set = str(cand.get("set", "")).lower()
+        c_num = str(cand.get("collector_number", ""))
+        c_lang = str(cand.get("lang", "")).lower()
+        
+        if (c_set, c_num.lower(), c_lang) in tested_prints:
+            continue
+        tested_prints.add((c_set, c_num.lower(), c_lang))
+        
+        try:
+            cand_scryfall = fetch_card(c_set, c_num, lang=c_lang, quality=quality, fail_policy=fail_policy)
+            c_front, c_back, c_ok, c_focus, c_dims = _download_and_check(
+                cand_scryfall, c_set, c_num, c_lang
+            )
+            
+            if c_focus > best_score:
+                best_front, best_back, best_score = c_front, c_back, c_focus
+                
+            if c_ok:
+                _log.info(
+                    "Encontrada alternativa válida de '%s' en print %s/%s [%s] (Enfoque: %.1f, Res: %dx%d)",
+                    card.name, c_set, c_num, c_lang, c_focus, c_dims[0], c_dims[1]
+                )
+                return c_front, c_back
+        except Exception as e:
+            _log.debug("Error al evaluar alternativa %s/%s [%s] para %s: %s", c_set, c_num, c_lang, card.name, e)
+
+    _log.warning(
+        "No se encontró ninguna alternativa que cumpla los criterios para '%s'. Usando la mejor disponible (Enfoque: %.1f).",
+        card.name, best_score
+    )
+    return best_front, best_back
 
 
 def download_deck_images(
@@ -284,6 +387,8 @@ def download_deck_images(
     lang: str = "en",
     quality: str = "large",
     fail_policy: str = "english",
+    quality_check: bool = True,
+    blur_threshold: float = 100.0,
 ) -> list[tuple[DeckCard, Path, Path | None]]:
     """Download images for all unique cards in parallel.
 
@@ -295,7 +400,16 @@ def download_deck_images(
 
     with ThreadPoolExecutor(max_workers=SCRYFALL_THREADS) as executor:
         futures = {
-            executor.submit(download_card_images, c, dest_dir, lang, quality, fail_policy): (i, c)
+            executor.submit(
+                download_card_images,
+                c,
+                dest_dir,
+                lang,
+                quality,
+                fail_policy,
+                quality_check,
+                blur_threshold,
+            ): (i, c)
             for i, c in enumerate(cards)
         }
         try:

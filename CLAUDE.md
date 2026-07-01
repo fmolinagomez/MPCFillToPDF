@@ -96,6 +96,12 @@ MPCFillToPDF/
 - `GET https://lh4.googleusercontent.com/d/{id}=d` via `requests` with `stream=True`. Works for both "Anyone with the link" and "Public on the web" Drive sharing modes; returns the original file unchanged (same approach as mpc-autofill).
 - Download with 5 parallel threads (matches mpc-autofill behaviour)
 
+### Scryfall Image Quality Control & Fallback
+- **Focus Check:** Grayscale conversion and Laplacian variance score (`cv2.Laplacian(gray, cv2.CV_64F).var()`). Images below the threshold (default `100.0`) are considered blurry/unfocused.
+- **Resolution Check:** Verifies dimensions are at least 745 × 1040 pixels (standard 300 DPI target for Scryfall PNGs).
+- **Fallback Logic:** If quality is insufficient (and check is enabled), queries Scryfall API for all prints (`oracle_id`) in preferred language first, then English. Downloads and tests candidates until one passes, otherwise falls back to the highest focus score print.
+- **Settings:** Configurable in the GUI's Configuración tab or `settings.json` via `scryfall_quality_check` (bool) and `scryfall_blur_threshold` (float).
+
 ### Image cropping
 - Crop formula: `border_x = round(width * 0.042)`, `border_y = round(height * 0.031)`
 - Crop box: `(border_x, border_y, width - border_x, height - border_y)`
