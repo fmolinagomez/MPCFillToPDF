@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact-name: MPCFillToPDF-windows
+            artifact-path: dist/MPCFillToPDF.exe
+          - os: macos-latest
+            artifact-name: MPCFillToPDF-mac
+            artifact-path: dist/MPCFillToPDF*
+          - os: ubuntu-latest
+            artifact-name: MPCFillToPDF-linux
+            artifact-path: dist/MPCFillToPDF
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Install dependencies (non-Windows)
+        if: runner.os != 'Windows'
+        run: pip install Pillow reportlab gdown requests plyer pyinstaller
+
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Compile PyInstaller bootloader from source
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone --depth=1 https://github.com/pyinstaller/pyinstaller.git $env:TEMP\pyinstaller-src
+          Set-Location "$env:TEMP\pyinstaller-src\bootloader"
+          python .\waf all
+          Set-Location ..
+          pip install --upgrade .
+
+      - name: Build executable
+        run: python build_exe.py
+        env:
+          DRIVE_API_KEY: ${{ secrets.DRIVE_API_KEY }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+          retention-days: 30

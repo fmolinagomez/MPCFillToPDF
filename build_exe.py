@@ -26,12 +26,20 @@ Without the flag the file is written with `False` and no `gui.log` is created.
 
 SmartScreen / antivirus false positives
 ---------------------------------------
-This build embeds Windows version metadata via `version_file.txt`, which
-reduces (but does not eliminate) the "unknown publisher" SmartScreen prompt
-on first launch.
+This build uses three measures to minimise false-positive AV detections:
 
-To reduce false positives further, you can rebuild PyInstaller's bootloader
-from source so it has a unique hash that AV vendors don't yet flag:
+1. UPX disabled (--noupx): UPX compression is a major heuristic trigger used
+   by many AV engines.  Disabling it increases binary size ~10 % but
+   significantly reduces detections.
+
+2. Stdlib bloat excluded: modules never used at runtime are stripped via
+   --exclude-module so the archive surface is smaller.
+
+3. Windows version metadata (version_file.txt) reduces (but does not
+   eliminate) the "unknown publisher" SmartScreen prompt on first launch.
+
+If detections persist, the next most effective step is rebuilding PyInstaller's
+bootloader from source so it gets a unique hash AV vendors don't yet flag:
 
     # One-time setup (requires a C compiler; on Windows install
     # "Visual Studio Build Tools" with the C++ workload).
@@ -42,6 +50,13 @@ from source so it has a unique hash that AV vendors don't yet flag:
     pip install --upgrade .
 
 After that, run `python build_exe.py` as usual.
+
+For any remaining detections after the above steps, submit the binary as a
+false positive directly to the vendors:
+  - Microsoft Defender / SmartScreen: https://www.microsoft.com/wdsi/filesubmission
+  - Bkav: https://www.bkav.com.vn/
+  - Gridinsoft: support@gridinsoft.com
+  - SecureAge: their analysis portal
 """
 
 import argparse
@@ -64,29 +79,29 @@ BUILD_FLAGS_PATH = ROOT / "gui" / "_build_flags.py"
 
 
 def _embed_api_key() -> bool:
-    """Read config.json, XOR-encode the API key, write src/_bundled_key.py.
+    """Read API key from config.json or DRIVE_API_KEY env var, XOR-encode it, write src/_bundled_key.py.
 
     Returns True if a key was successfully embedded, False otherwise.
     The file must be deleted after the build regardless.
     """
+    key = ""
+
     config_path = ROOT / "config.json"
-    if not config_path.exists():
-        print(
-            "WARNING: config.json not found — API key will NOT be embedded.\n"
-            "         Copy config.example.json to config.json and fill in your key."
-        )
-        return False
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            key = str(data.get("google_drive_api_key", "")).strip()
+            if key.startswith("YOUR_"):
+                key = ""
+        except Exception as exc:
+            print(f"WARNING: Could not parse config.json ({exc}).")
 
-    try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        print(f"WARNING: Could not parse config.json ({exc}) — API key not embedded.")
-        return False
+    if not key:
+        key = os.environ.get("DRIVE_API_KEY", "").strip()
 
-    key = str(data.get("google_drive_api_key", "")).strip()
-    if not key or key.startswith("YOUR_"):
+    if not key:
         print(
-            "WARNING: google_drive_api_key is not set in config.json — "
+            "WARNING: No API key found (config.json or DRIVE_API_KEY env var) — "
             "API key will NOT be embedded."
         )
         return False
@@ -133,7 +148,10 @@ def _remove_build_flags() -> None:
 
 
 def _check_paths() -> None:
-    missing = [p for p in (ENTRY, VERSION_FILE, ASSETS, ICONS, RESOURCES) if not p.exists()]
+    required = [ENTRY, ASSETS, ICONS, RESOURCES]
+    if sys.platform == "win32":
+        required.append(VERSION_FILE)
+    missing = [p for p in required if not p.exists()]
     if missing:
         for p in missing:
             print(f"ERROR: ruta requerida no encontrada: {p}", file=sys.stderr)
@@ -164,19 +182,35 @@ def main() -> None:
         "--clean",
         "--onefile",
         "--windowed",
+        "--noupx",
         "--log-level=WARN",
         "--name",
         APP_NAME,
-        f"--version-file={VERSION_FILE}",
         f"--add-data={ASSETS}{sep}src/assets",
         f"--add-data={ICONS}{sep}icons",
         f"--add-data={RESOURCES}{sep}resources",
         "--hidden-import=PIL.Image",
         "--hidden-import=reportlab.pdfgen",
         "--hidden-import=gdown",
-        "--hidden-import=windnd",
+        # Strip stdlib modules that are never imported at runtime.
+        # Reduces archive surface scanned by AV heuristics.
+        "--exclude-module=unittest",
+        "--exclude-module=doctest",
+        "--exclude-module=pdb",
+        "--exclude-module=difflib",
+        "--exclude-module=ftplib",
+        "--exclude-module=imaplib",
+        "--exclude-module=smtplib",
+        "--exclude-module=poplib",
+        "--exclude-module=telnetlib",
+        "--exclude-module=xmlrpc",
+        "--exclude-module=http.server",
+        "--exclude-module=tkinter.test",
         str(ENTRY),
     ]
+    if sys.platform == "win32":
+        args.append(f"--version-file={VERSION_FILE}")
+        args.append("--hidden-import=windnd")
     print("Running:", " ".join(args))
     try:
         subprocess.run(args, check=True, cwd=ROOT)
@@ -184,7 +218,8 @@ def main() -> None:
         _remove_bundled_key()
         _remove_build_flags()
 
-    print(f"\nBuilt: {ROOT / 'dist' / (APP_NAME + '.exe')}")
+    suffix = ".exe" if sys.platform == "win32" else ""
+    print(f"\nBuilt: {ROOT / 'dist' / (APP_NAME + suffix)}")
 
 
 if __name__ == "__main__":
