@@ -157,6 +157,34 @@ class TestLoadSettings:
         settings_file.write_text(json.dumps({"scryfall_fail_policy": "invalid"}), encoding="utf-8")
         assert load_settings(tmp_path).scryfall_fail_policy == "english"
 
+    def test_scryfall_quality_check_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_quality_check=False)
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_quality_check is False
+
+    def test_scryfall_quality_check_default_is_true(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_quality_check is True
+
+    def test_scryfall_blur_threshold_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_blur_threshold=150.5)
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_blur_threshold == pytest.approx(150.5)
+
+    def test_scryfall_blur_threshold_default_is_100(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_blur_threshold == pytest.approx(100.0)
+
+    def test_scryfall_blur_threshold_invalid_falls_back(self, tmp_path):
+        settings_file = tmp_path / "MPCFillToPDF" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(json.dumps({"scryfall_blur_threshold": "invalid"}), encoding="utf-8")
+        assert load_settings(tmp_path).scryfall_blur_threshold == pytest.approx(100.0)
+
+    def test_scryfall_blur_threshold_clamped_to_min(self, tmp_path):
+        settings_file = tmp_path / "MPCFillToPDF" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(json.dumps({"scryfall_blur_threshold": -10.0}), encoding="utf-8")
+        assert load_settings(tmp_path).scryfall_blur_threshold == pytest.approx(0.0)
+
 
 class TestSaveSettings:
     def test_creates_parent_dirs(self, tmp_path):
