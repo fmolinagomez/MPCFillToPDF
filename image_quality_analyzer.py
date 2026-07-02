@@ -15,20 +15,28 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-# Intentar importar librerías críticas para el análisis
+# Asegurar que el directorio raíz está en sys.path para importaciones de src
+SCRIPT_DIR = Path(__file__).parent.absolute()
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+# Intentar importar librerías críticas para el análisis y dependencias del importador
 try:
     import cv2
     import numpy as np
     from PIL import Image
+    from src.deck_importer import fetch_deck, DeckImportError
+    from src.scryfall import download_deck_images, ScryfallError
 except ImportError as e:
     root = tk.Tk()
     root.withdraw()
     messagebox.showerror(
         "Faltan Dependencias",
         f"No se pudieron importar las dependencias necesarias. Por favor ejecuta:\n"
-        f"uv pip install pillow opencv-python numpy\n\nDetalle: {e}"
+        f"uv pip install pillow opencv-python numpy requests\n\nDetalle: {e}"
     )
     sys.exit(1)
+
 
 # Dimensiones estándar de cartas (en milímetros y pulgadas)
 CARD_W_MM = 63.5
@@ -379,7 +387,7 @@ class AnalyzerApp:
         actions_label.pack(anchor="w", pady=(0, 15))
 
         # Botones de control
-        btn_add_files = HoverButton(
+        self.btn_add_files = HoverButton(
             controls_frame,
             bg_color=COLOR_PRIMARY,
             fg_color=TEXT_WHITE,
@@ -390,9 +398,9 @@ class AnalyzerApp:
             width=18,
             command=self._add_files
         )
-        btn_add_files.pack(pady=5)
+        self.btn_add_files.pack(pady=5)
 
-        btn_add_dir = HoverButton(
+        self.btn_add_dir = HoverButton(
             controls_frame,
             bg_color=COLOR_PRIMARY,
             fg_color=TEXT_WHITE,
@@ -403,9 +411,22 @@ class AnalyzerApp:
             width=18,
             command=self._add_directory
         )
-        btn_add_dir.pack(pady=5)
+        self.btn_add_dir.pack(pady=5)
 
-        btn_clear_list = HoverButton(
+        self.btn_add_moxfield = HoverButton(
+            controls_frame,
+            bg_color=COLOR_PRIMARY,
+            fg_color=TEXT_WHITE,
+            hover_bg=COLOR_PRIMARY_HOVER,
+            hover_fg=TEXT_WHITE,
+            text="Añadir desde Moxfield...",
+            font=("Arial", 10, "bold"),
+            width=18,
+            command=self._add_moxfield_deck
+        )
+        self.btn_add_moxfield.pack(pady=5)
+
+        self.btn_clear_list = HoverButton(
             controls_frame,
             bg_color=BG_HIGHLIGHT,
             fg_color=TEXT_WHITE,
@@ -416,7 +437,7 @@ class AnalyzerApp:
             width=18,
             command=self._clear_pending_list
         )
-        btn_clear_list.pack(pady=(5, 30))
+        self.btn_clear_list.pack(pady=(5, 30))
 
         # Botón para ejecutar el Análisis
         self.btn_analyze = HoverButton(
@@ -712,7 +733,7 @@ class AnalyzerApp:
             return
 
         self.is_processing = True
-        self.btn_analyze.config(state="disabled", bg=BG_HIGHLIGHT)
+        self._set_controls_state("disabled")
         self.notebook.select(self.tab_results)  # Cambiar a la pestaña de resultados automáticamente
 
         total_files = len(self.pending_files)
@@ -789,7 +810,7 @@ class AnalyzerApp:
 
                 elif msg["type"] == "done":
                     self.is_processing = False
-                    self.btn_analyze.config(state="normal", bg=COLOR_SUCCESS)
+                    self._set_controls_state("normal")
                     
                     # Vaciar la lista de imágenes pendientes analizadas
                     self._clear_pending_list()
@@ -802,11 +823,208 @@ class AnalyzerApp:
                     )
                     return
                 
+                elif msg["type"] == "download_progress":
+                    self.progress["maximum"] = msg["total"]
+                    self.progress["value"] = msg["done"]
+                    self._update_status(msg["text"])
+
+                elif msg["type"] == "download_done":
+                    self.is_processing = False
+                    self._set_controls_state("normal")
+                    self.progress["value"] = 0
+                    
+                    # Añadir las imágenes descargadas a la lista
+                    added_count = 0
+                    for p in msg["files"]:
+                        if p not in self.pending_files:
+                            self.pending_files.append(p)
+                            self.listbox.insert("end", str(p))
+                            added_count += 1
+                    
+                    self._update_status(f"Importación completada. Se añadieron {added_count} imágenes del mazo '{msg['deck_name']}'.")
+                    messagebox.showinfo(
+                        "Importación Exitosa",
+                        f"Se importó el mazo '{msg['deck_name']}' con éxito.\n"
+                        f"Se añadieron {added_count} imágenes nuevas a la lista para analizar."
+                    )
+                    return
+
+                elif msg["type"] == "download_error":
+                    self.is_processing = False
+                    self._set_controls_state("normal")
+                    self.progress["value"] = 0
+                    self._update_status("Error durante la importación.")
+                    messagebox.showerror("Error de Importación", msg["message"])
+                    return
+
                 self.queue.task_done()
         except queue.Empty:
             # Si no hay más mensajes por ahora, programar el siguiente chequeo
             if self.is_processing:
                 self.root.after(100, self._check_queue)
+
+    def _set_controls_state(self, state):
+        for btn in (self.btn_add_files, self.btn_add_dir, self.btn_add_moxfield, self.btn_clear_list, self.btn_analyze):
+            if btn:
+                if state == "disabled":
+                    btn.config(state="disabled", bg=BG_HIGHLIGHT)
+                else:
+                    if btn == self.btn_analyze:
+                        btn.config(state="normal", bg=COLOR_SUCCESS)
+                    elif btn == self.btn_clear_list:
+                        btn.config(state="normal", bg=BG_HIGHLIGHT)
+                    else:
+                        btn.config(state="normal", bg=COLOR_PRIMARY)
+
+    def _add_moxfield_deck(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Importar Mazo Moxfield")
+        dlg.geometry("500x180")
+        dlg.configure(bg=BG_DARK)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # Centrar diálogo
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        extra_x = (self.root.winfo_width() - w) // 2
+        extra_y = (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"+{self.root.winfo_x() + extra_x}+{self.root.winfo_y() + extra_y}")
+
+        lbl_title = tk.Label(
+            dlg,
+            text="Importar mazo desde URL (Moxfield, Archidekt, etc.)",
+            font=("Arial", 11, "bold"),
+            bg=BG_DARK,
+            fg=TEXT_WHITE
+        )
+        lbl_title.pack(anchor="w", padx=15, pady=(15, 5))
+
+        lbl_desc = tk.Label(
+            dlg,
+            text="Introduce la URL del mazo a analizar:",
+            font=("Arial", 9),
+            bg=BG_DARK,
+            fg=TEXT_MUTED
+        )
+        lbl_desc.pack(anchor="w", padx=15, pady=(0, 10))
+
+        url_frame = tk.Frame(dlg, bg=BG_DARK)
+        url_frame.pack(fill="x", padx=15, pady=5)
+
+        url_var = tk.StringVar()
+        url_entry = tk.Entry(
+            url_frame,
+            textvariable=url_var,
+            bg=BG_PANEL,
+            fg=TEXT_WHITE,
+            insertbackground=TEXT_WHITE,
+            relief="flat",
+            font=("Consolas", 10),
+            highlightthickness=1,
+            highlightbackground=BG_HIGHLIGHT,
+            highlightcolor=COLOR_PRIMARY
+        )
+        url_entry.pack(fill="x", ipady=4)
+        url_entry.focus_set()
+
+        btn_frame = tk.Frame(dlg, bg=BG_DARK)
+        btn_frame.pack(fill="x", padx=15, pady=(15, 10))
+
+        def on_import():
+            url = url_var.get().strip()
+            if not url:
+                messagebox.showwarning("Campo Vacío", "Por favor ingresa una URL.", parent=dlg)
+                return
+            dlg.destroy()
+            self._start_moxfield_import(url)
+
+        def on_cancel():
+            dlg.destroy()
+
+        btn_import = HoverButton(
+            btn_frame,
+            bg_color=COLOR_PRIMARY,
+            fg_color=TEXT_WHITE,
+            hover_bg=COLOR_PRIMARY_HOVER,
+            hover_fg=TEXT_WHITE,
+            text="Importar",
+            font=("Arial", 10, "bold"),
+            command=on_import
+        )
+        btn_import.pack(side="right", padx=(10, 0))
+
+        btn_cancel = HoverButton(
+            btn_frame,
+            bg_color=BG_HIGHLIGHT,
+            fg_color=TEXT_WHITE,
+            hover_bg="#4d4d4d",
+            hover_fg=TEXT_WHITE,
+            text="Cancelar",
+            font=("Arial", 10),
+            command=on_cancel
+        )
+        btn_cancel.pack(side="right")
+
+        url_entry.bind("<Return>", lambda e: on_import())
+        url_entry.bind("<Escape>", lambda e: on_cancel())
+
+    def _start_moxfield_import(self, url):
+        if self.is_processing:
+            return
+        
+        self.is_processing = True
+        self._set_controls_state("disabled")
+        
+        self.progress["maximum"] = 100
+        self.progress["value"] = 0
+        self._update_status("Iniciando importación desde la URL del mazo...")
+        
+        worker = threading.Thread(target=self._moxfield_import_worker, args=(url,), daemon=True)
+        worker.start()
+        
+        self.root.after(100, self._check_queue)
+
+    def _moxfield_import_worker(self, url):
+        try:
+            self.queue.put({"type": "download_progress", "done": 0, "total": 1, "text": "Obteniendo datos del mazo..."})
+            deck = fetch_deck(url)
+            
+            cards = deck.cards
+            if not cards:
+                self.queue.put({"type": "download_error", "message": "El mazo importado no contiene cartas."})
+                return
+            
+            dest_dir = Path(__file__).parent.absolute() / "workdir" / "scryfall_analyzer"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            
+            def progress_cb(done, total):
+                self.queue.put({
+                    "type": "download_progress",
+                    "done": done,
+                    "total": total,
+                    "text": f"Descargando imágenes de Scryfall ({done}/{total})...."
+                })
+            
+            dl_results = download_deck_images(cards, dest_dir, progress_cb=progress_cb)
+            
+            downloaded_paths = []
+            for card, front_path, back_path in dl_results:
+                if front_path and front_path.exists():
+                    downloaded_paths.append(front_path)
+                if back_path and back_path.exists():
+                    downloaded_paths.append(back_path)
+            
+            self.queue.put({"type": "download_done", "files": downloaded_paths, "deck_name": deck.name})
+            
+        except DeckImportError as e:
+            self.queue.put({"type": "download_error", "message": f"Error al importar el mazo: {e}"})
+        except ScryfallError as e:
+            self.queue.put({"type": "download_error", "message": f"Error al descargar de Scryfall: {e}"})
+        except Exception as e:
+            self.queue.put({"type": "download_error", "message": f"Error inesperado: {e}"})
 
     def _update_status(self, text):
         self.status_label.config(text=text)
