@@ -53,12 +53,14 @@ class DeckCard:
     quantity: int
     zone: str  # "main" | "side"
     is_commander: bool = False
+    type_line: str = ""
 
 
 @dataclass
 class FetchedDeck:
     name: str
     cards: list[DeckCard]
+    format: str = "commander"
 
 
 def fetch_deck(url: str) -> FetchedDeck:
@@ -94,6 +96,7 @@ def _fetch_moxfield(deck_id: str) -> FetchedDeck:
         raise DeckImportError(f"Error al acceder a Moxfield: {exc}", "moxfield") from exc
 
     deck_name: str = data.get("name", "")
+    deck_format: str = data.get("format", "commander")
     cards: list[DeckCard] = []
     boards = data.get("boards", {})
     for board_name, zone in (
@@ -109,10 +112,11 @@ def _fetch_moxfield(deck_id: str) -> FetchedDeck:
             collector_number = str(card.get("cn", ""))
             name = card.get("name", "")
             qty = int(entry.get("quantity", 1))
+            type_line = card.get("type_line", "")
             if not set_code or not collector_number:
                 continue
             is_commander = (board_name == "commanders")
-            cards.append(DeckCard(name, set_code, collector_number, qty, zone, is_commander=is_commander))
+            cards.append(DeckCard(name, set_code, collector_number, qty, zone, is_commander=is_commander, type_line=type_line))
 
     # Parse tokens from Moxfield JSON response
     for token_card in data.get("tokens", []):
@@ -120,11 +124,12 @@ def _fetch_moxfield(deck_id: str) -> FetchedDeck:
         collector_number = str(token_card.get("cn", ""))
         name = token_card.get("name", "")
         qty = int(token_card.get("quantity") or 1)
+        type_line = token_card.get("type_line", "") or "Token"
         if not set_code or not collector_number:
             continue
-        cards.append(DeckCard(name, set_code, collector_number, qty, "token"))
+        cards.append(DeckCard(name, set_code, collector_number, qty, "token", type_line=type_line))
 
-    return FetchedDeck(name=deck_name, cards=cards)
+    return FetchedDeck(name=deck_name, cards=cards, format=deck_format)
 
 
 def _fetch_archidekt(deck_id: str) -> FetchedDeck:
@@ -137,6 +142,7 @@ def _fetch_archidekt(deck_id: str) -> FetchedDeck:
         raise DeckImportError(f"Error al acceder a Archidekt: {exc}", "archidekt") from exc
 
     deck_name: str = data.get("name", "")
+    deck_format: str = data.get("deckFormat", "commander")
     cards: list[DeckCard] = []
     for entry in data.get("cards", []):
         categories = entry.get("categories", [])
@@ -146,14 +152,22 @@ def _fetch_archidekt(deck_id: str) -> FetchedDeck:
         edition = card_data.get("edition", {})
         set_code = str(edition.get("editioncode", "")).lower()
         collector_number = str(card_data.get("collectorNumber", ""))
-        name = card_data.get("oracleCard", {}).get("name", "")
+        oracle_card = card_data.get("oracleCard", {})
+        name = oracle_card.get("name", "")
         qty = int(entry.get("quantity", 1))
         zone = "side" if any(c in _ARCHIDEKT_SIDE_CATEGORIES for c in categories) else "main"
+        
+        type_line = oracle_card.get("type", "")
+        if not type_line and "types" in oracle_card:
+            types_list = oracle_card.get("types", [])
+            if isinstance(types_list, list):
+                type_line = " ".join(types_list)
+                
         if not set_code or not collector_number:
             continue
         is_commander = "Commander" in categories
-        cards.append(DeckCard(name, set_code, collector_number, qty, zone, is_commander=is_commander))
-    return FetchedDeck(name=deck_name, cards=cards)
+        cards.append(DeckCard(name, set_code, collector_number, qty, zone, is_commander=is_commander, type_line=type_line))
+    return FetchedDeck(name=deck_name, cards=cards, format=deck_format)
 
 
 def _fetch_deckstats(owner_id: str, deck_id: str) -> FetchedDeck:
@@ -293,8 +307,9 @@ def _fetch_manabox(deck_id: str) -> FetchedDeck:
         quantity = int(_astro_val(entry.get("quantity", 1)))  # type: ignore[arg-type]
         board_cat = int(_astro_val(entry.get("boardCategory", 0)))  # type: ignore[arg-type]
         zone = "side" if board_cat in _MANABOX_SIDE_CATS else "main"
+        type_line = str(_astro_val(entry.get("typeLine", ""))) or ""
         if not name:
             continue
-        cards.append(DeckCard(name, set_code, collector_number, quantity, zone))
+        cards.append(DeckCard(name, set_code, collector_number, quantity, zone, type_line=type_line))
 
     return FetchedDeck(name=deck_name, cards=cards)

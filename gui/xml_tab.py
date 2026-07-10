@@ -282,6 +282,18 @@ class XmlTabMixin:
                 ).grid(row=0, column=col, padx=(0, 4))
                 col += 1
 
+            # Checkbox to include/exclude the deck separator card
+            sep_var = tk.BooleanVar(value=deck.include_separator)
+
+            def _toggle_sep(idx=i, var=sep_var):
+                self.state.mtg_url_decks[idx].include_separator = var.get()
+                self._refresh_generate_state()
+
+            ttk.Checkbutton(
+                right, text="Incluir separador", variable=sep_var, command=_toggle_sep
+            ).grid(row=0, column=col, padx=(0, 4))
+            col += 1
+
             if deck.back_path is not None and deck.back_path not in self.state.local_backs:
                 deck.back_path = None
 
@@ -436,7 +448,7 @@ class XmlTabMixin:
             def _run():
                 try:
                     result = fetch_deck(url)
-                    self.events.put(("mtg_url_loaded", url, result.cards, False, result.name))
+                    self.events.put(("mtg_url_loaded", url, result.cards, False, result.name, result.format))
                 except DeckImportError as exc:
                     self.events.put(("mtg_url_error", str(exc)))
                 except Exception as exc:

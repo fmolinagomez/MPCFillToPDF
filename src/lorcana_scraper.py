@@ -364,6 +364,8 @@ def download_images(
     done = 0
 
     def _fetch(card: LorcanaCard) -> tuple[str, Path]:
+        if cancel_event and cancel_event.is_set():
+            raise Cancelled()
         if not card.image_url:
             raise ValueError(f"Sin URL de imagen para la carta '{card.name}'")
         ext = card.image_url.rsplit(".", 1)[-1].split("?")[0] or "webp"
@@ -371,6 +373,8 @@ def download_images(
         path = dest_dir / f"{safe_name}.{ext}"
         if path.exists():
             return card.card_id, path
+        if cancel_event and cancel_event.is_set():
+            raise Cancelled()
         r = requests.get(card.image_url, headers=_HEADERS, timeout=20)
         r.raise_for_status()
         path.write_bytes(r.content)

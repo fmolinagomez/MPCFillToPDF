@@ -607,11 +607,15 @@ def download_images(
     unique = {c.variant_id: c for c in deck.cards}
 
     def _fetch(card: RBCard) -> tuple[str, Path]:
+        if cancel_event and cancel_event.is_set():
+            raise Cancelled()
         ext = card.image_url.rsplit(".", 1)[-1].split("?")[0] or "webp"
         safe_name = re.sub(r"[^\w\-.]", "_", card.variant_id)
         path = dest_dir / f"{safe_name}.{ext}"
         if path.exists():
             return card.variant_id, path
+        if cancel_event and cancel_event.is_set():
+            raise Cancelled()
         r = requests.get(card.image_url, headers=_HEADERS, timeout=20)
         r.raise_for_status()
         path.write_bytes(r.content)

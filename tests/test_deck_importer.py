@@ -14,16 +14,17 @@ from src.deck_importer import (
 
 _MOXFIELD_FIXTURE = {
     "name": "Test Deck",
+    "format": "modern",
     "boards": {
         "mainboard": {
             "cards": {
                 "a1": {
                     "quantity": 4,
-                    "card": {"name": "Lightning Bolt", "set": "ltr", "cn": "152"},
+                    "card": {"name": "Lightning Bolt", "set": "ltr", "cn": "152", "type_line": "Instant"},
                 },
                 "a2": {
                     "quantity": 1,
-                    "card": {"name": "Forest", "set": "m21", "cn": "295"},
+                    "card": {"name": "Forest", "set": "m21", "cn": "295", "type_line": "Basic Land — Forest"},
                 },
             }
         },
@@ -31,7 +32,7 @@ _MOXFIELD_FIXTURE = {
             "cards": {
                 "c1": {
                     "quantity": 1,
-                    "card": {"name": "Urza, Lord High Artificer", "set": "mh1", "cn": "75"},
+                    "card": {"name": "Urza, Lord High Artificer", "set": "mh1", "cn": "75", "type_line": "Legendary Creature — Human Artificer"},
                 }
             }
         },
@@ -40,13 +41,13 @@ _MOXFIELD_FIXTURE = {
             "cards": {
                 "b1": {
                     "quantity": 2,
-                    "card": {"name": "Naturalize", "set": "m21", "cn": "196"},
+                    "card": {"name": "Naturalize", "set": "m21", "cn": "196", "type_line": "Instant"},
                 }
             }
         },
     },
     "tokens": [
-        {"name": "Thopter", "set": "tmh1", "cn": "19", "quantity": 3}
+        {"name": "Thopter", "set": "tmh1", "cn": "19", "quantity": 3, "type_line": "Token Creature — Thopter"}
     ]
 }
 
@@ -128,6 +129,7 @@ class TestMoxfieldFetch:
         assert bolt.set_code == "ltr"
         assert bolt.collector_number == "152"
         assert bolt.quantity == 4
+        assert bolt.type_line == "Instant"
 
     def test_extracts_commander(self):
         with patch(
@@ -153,6 +155,7 @@ class TestMoxfieldFetch:
         assert tok.set_code == "tmh1"
         assert tok.collector_number == "19"
         assert tok.quantity == 3
+        assert tok.type_line == "Token Creature — Thopter"
 
     def test_extracts_sideboard_cards(self):
         with patch(
@@ -170,6 +173,7 @@ class TestMoxfieldFetch:
         ):
             result = fetch_deck("https://www.moxfield.com/decks/ABC123")
         assert result.name == "Test Deck"
+        assert result.format == "modern"
 
     def test_extracts_companion_as_main(self):
         with patch(

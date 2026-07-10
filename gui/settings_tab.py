@@ -269,30 +269,6 @@ class SettingsTabMixin:
         # Configurar estado inicial de calidad
         self._update_sf_quality_check_state()
 
-        # Descargar sideboard
-        sb_row = ttk.Frame(sf_frame)
-        sb_row.pack(fill=tk.X, pady=4)
-        self._settings_sf_download_sideboard_var = tk.BooleanVar(value=self._settings.scryfall_download_sideboard)
-        self._sf_download_sideboard_cb = ttk.Checkbutton(
-            sb_row,
-            text="Descargar el sideboard",
-            variable=self._settings_sf_download_sideboard_var,
-            command=self._on_sf_download_sideboard_changed,
-        )
-        self._sf_download_sideboard_cb.pack(anchor=tk.W)
-
-        # Descargar tokens
-        tk_row = ttk.Frame(sf_frame)
-        tk_row.pack(fill=tk.X, pady=4)
-        self._settings_sf_download_tokens_var = tk.BooleanVar(value=self._settings.scryfall_download_tokens)
-        self._sf_download_tokens_cb = ttk.Checkbutton(
-            tk_row,
-            text="Descargar los tokens",
-            variable=self._settings_sf_download_tokens_var,
-            command=self._on_sf_download_tokens_changed,
-        )
-        self._sf_download_tokens_cb.pack(anchor=tk.W)
-
         # Separadores de mazos
         sep_row = ttk.Frame(sf_frame)
         sep_row.pack(fill=tk.X, pady=4)
@@ -429,14 +405,6 @@ class SettingsTabMixin:
         self._settings.scryfall_brightness_contrast_check = self._settings_sf_bc_check_var.get()
         self._persist_settings()
 
-    def _on_sf_download_sideboard_changed(self) -> None:
-        self._settings.scryfall_download_sideboard = self._settings_sf_download_sideboard_var.get()
-        self._persist_settings()
-
-    def _on_sf_download_tokens_changed(self) -> None:
-        self._settings.scryfall_download_tokens = self._settings_sf_download_tokens_var.get()
-        self._persist_settings()
-
     def _on_sf_deck_separators_changed(self) -> None:
         self._settings.scryfall_deck_separators = self._settings_sf_deck_separators_var.get()
         self._persist_settings()
@@ -488,8 +456,6 @@ class SettingsTabMixin:
         self._settings_sf_quality_check_var.set(DEFAULT_SCRYFALL_QUALITY_CHECK)
         self._settings_sf_blur_threshold_var.set(f"{DEFAULT_SCRYFALL_BLUR_THRESHOLD}")
         self._settings_sf_bc_check_var.set(DEFAULT_SCRYFALL_BC_CHECK)
-        self._settings_sf_download_sideboard_var.set(DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD)
-        self._settings_sf_download_tokens_var.set(DEFAULT_SCRYFALL_DOWNLOAD_TOKENS)
         self._settings_sf_deck_separators_var.set(DEFAULT_SCRYFALL_DECK_SEPARATORS)
         self._update_sf_quality_check_state()
 

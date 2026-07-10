@@ -242,6 +242,7 @@ class TestDownloadImagesCancellation:
 
         mock_resp = MagicMock()
         mock_resp.content = b"fake"
+        mock_resp.raise_for_status.return_value = None
         with patch("src.lorcana_scraper.requests.get", return_value=mock_resp):
             with pytest.raises(Cancelled):
                 download_images(deck, tmp_path, cancel_event=cancel)

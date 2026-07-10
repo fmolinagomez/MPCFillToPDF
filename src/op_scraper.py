@@ -341,11 +341,15 @@ def download_images(
     done = 0
 
     def _fetch(card: OPCard) -> tuple[str, Path]:
+        if cancel_event and cancel_event.is_set():
+            raise Cancelled()
         path = dest_dir / f"{card.card_id}.{ext}"
         if path.exists():
             return card.card_id, path
         url = url_func(card.card_id)
         try:
+            if cancel_event and cancel_event.is_set():
+                raise Cancelled()
             r = requests.get(url, headers=req_headers, timeout=20)
             r.raise_for_status()
             path.write_bytes(r.content)
@@ -357,6 +361,8 @@ def download_images(
         fb_path = dest_dir / f"{card.card_id}.png"
         if fb_path.exists():
             return card.card_id, fb_path
+        if cancel_event and cancel_event.is_set():
+            raise Cancelled()
         fb_r = requests.get(
             _kaizoku_img(card.card_id),
             headers={**_HEADERS, "Referer": _KAIZOKU_REFERER},
