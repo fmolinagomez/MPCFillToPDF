@@ -17,6 +17,10 @@ DEFAULT_SCRYFALL_QUALITY = "large"
 DEFAULT_SCRYFALL_FAIL_POLICY = "english"
 DEFAULT_SCRYFALL_QUALITY_CHECK = True
 DEFAULT_SCRYFALL_BLUR_THRESHOLD = 100.0
+DEFAULT_SCRYFALL_BC_CHECK = True
+DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD = False
+DEFAULT_SCRYFALL_DOWNLOAD_TOKENS = False
+DEFAULT_SCRYFALL_DECK_SEPARATORS = False
 
 
 @dataclass
@@ -33,6 +37,11 @@ class AppSettings:
     scryfall_fail_policy: str = DEFAULT_SCRYFALL_FAIL_POLICY
     scryfall_quality_check: bool = DEFAULT_SCRYFALL_QUALITY_CHECK
     scryfall_blur_threshold: float = DEFAULT_SCRYFALL_BLUR_THRESHOLD
+    scryfall_brightness_contrast_check: bool = DEFAULT_SCRYFALL_BC_CHECK
+    scryfall_download_sideboard: bool = DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD
+    scryfall_download_tokens: bool = DEFAULT_SCRYFALL_DOWNLOAD_TOKENS
+    scryfall_deck_separators: bool = DEFAULT_SCRYFALL_DECK_SEPARATORS
+
 
 
 def _settings_path(base_dir: Path) -> Path:
@@ -86,6 +95,11 @@ def load_settings(base_dir: Path) -> AppSettings:
         except (TypeError, ValueError):
             sf_blur_threshold = DEFAULT_SCRYFALL_BLUR_THRESHOLD
 
+        sf_bc_check = bool(data.get("scryfall_brightness_contrast_check", DEFAULT_SCRYFALL_BC_CHECK))
+        sf_download_sideboard = bool(data.get("scryfall_download_sideboard", DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD))
+        sf_download_tokens = bool(data.get("scryfall_download_tokens", DEFAULT_SCRYFALL_DOWNLOAD_TOKENS))
+        sf_deck_separators = bool(data.get("scryfall_deck_separators", DEFAULT_SCRYFALL_DECK_SEPARATORS))
+
         return AppSettings(
             output_dir=output_dir,
             cut_line_color=color,
@@ -99,6 +113,10 @@ def load_settings(base_dir: Path) -> AppSettings:
             scryfall_fail_policy=sf_fail_policy,
             scryfall_quality_check=sf_quality_check,
             scryfall_blur_threshold=sf_blur_threshold,
+            scryfall_brightness_contrast_check=sf_bc_check,
+            scryfall_download_sideboard=sf_download_sideboard,
+            scryfall_download_tokens=sf_download_tokens,
+            scryfall_deck_separators=sf_deck_separators,
         )
     except Exception as exc:
         _log.warning("Could not load settings.json: %s", exc)
@@ -123,6 +141,10 @@ def save_settings(settings: AppSettings, base_dir: Path) -> None:
             "scryfall_fail_policy": settings.scryfall_fail_policy,
             "scryfall_quality_check": settings.scryfall_quality_check,
             "scryfall_blur_threshold": settings.scryfall_blur_threshold,
+            "scryfall_brightness_contrast_check": settings.scryfall_brightness_contrast_check,
+            "scryfall_download_sideboard": settings.scryfall_download_sideboard,
+            "scryfall_download_tokens": settings.scryfall_download_tokens,
+            "scryfall_deck_separators": settings.scryfall_deck_separators,
         }
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")

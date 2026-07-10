@@ -27,6 +27,7 @@ try:
     from PIL import Image
     from src.deck_importer import fetch_deck, DeckImportError
     from src.scryfall import download_deck_images, ScryfallError
+    from src.quality import analyze_single_image
 except ImportError as e:
     root = tk.Tk()
     root.withdraw()
@@ -48,19 +49,25 @@ CARD_H_IN = 3.5
 BLEED_X_FRAC = 0.042
 BLEED_Y_FRAC = 0.031
 
-# Colores del tema oscuro premium
-BG_DARK = "#1e1e1e"
-BG_PANEL = "#2d2d2d"
-BG_HIGHLIGHT = "#3a3a3a"
-TEXT_WHITE = "#ffffff"
-TEXT_MUTED = "#a0a0a0"
-COLOR_PRIMARY = "#007acc"
-COLOR_PRIMARY_HOVER = "#0096ff"
-COLOR_SUCCESS = "#4caf50"
-COLOR_SUCCESS_HOVER = "#66bb6a"
-COLOR_WARNING = "#ff9800"
-COLOR_DANGER = "#d32f2f"
-COLOR_DANGER_HOVER = "#f44336"
+# Colores del tema macOS Light
+BG_DARK = "#eceef0"          # Fondo de la ventana principal (gris mac claro)
+BG_PANEL = "#ffffff"         # Fondo de paneles y tarjetas (blanco)
+BG_HIGHLIGHT = "#e5e5ea"     # Fondo de elementos destacados o bordes (gris suave)
+TEXT_DARK = "#1d1d1f"        # Texto principal (negro mac, casi negro)
+TEXT_MUTED = "#86868b"       # Texto secundario/desactivado (gris mac)
+TEXT_WHITE = "#ffffff"       # Texto blanco puro para botones primarios
+COLOR_PRIMARY = "#007aff"     # Accent color de macOS (azul sistema)
+COLOR_PRIMARY_HOVER = "#0062cc" # Accent color hover
+COLOR_SUCCESS = "#34c759"     # Éxito (verde macOS)
+COLOR_SUCCESS_HOVER = "#28a745"
+COLOR_WARNING = "#ff9500"     # Advertencia (naranja macOS)
+COLOR_DANGER = "#ff3b30"      # Peligro/Error (rojo macOS)
+COLOR_DANGER_HOVER = "#e02d24"
+
+# Fuentes del sistema para un aspecto nativo de macOS / Windows / Linux
+FONT_FAMILY = ".AppleSystemUIFont" if sys.platform.startswith("darwin") else "Segoe UI" if os.name == "nt" else "Arial"
+FONT_MONO = "Menlo" if sys.platform.startswith("darwin") else "Consolas" if os.name == "nt" else "monospace"
+
 
 
 class HoverButton(tk.Button):
@@ -95,112 +102,7 @@ class HoverButton(tk.Button):
         self.config(bg=self.bg_color, fg=self.fg_color, highlightbackground=self.bg_color)
 
 
-def analyze_single_image(file_path: Path) -> dict:
-    """
-    Analiza una sola imagen y calcula las 5 métricas de calidad.
-    Retorna un diccionario con los resultados formateados.
-    """
-    res = {
-        "filepath": str(file_path),
-        "filename": file_path.name,
-        "integrity": "OK",
-        "resolution": "N/A",
-        "dpi_est": "N/A",
-        "sharpness": "N/A",
-        "brightness": "N/A",
-        "contrast": "N/A",
-        "aspect": "N/A",
-        "is_ok": True,
-    }
 
-    try:
-        # 1. Integridad: Verificar apertura y decodificación completa
-        try:
-            with Image.open(file_path) as img:
-                img.load()  # Decodifica la imagen para comprobar integridad real
-                w, h = img.size
-        except Exception as e:
-            res["integrity"] = f"Corrupto: {e}"
-            res["is_ok"] = False
-            return res
-
-        # 2. Resolución y DPI Estimado
-        res["resolution"] = f"{w}x{h}"
-        
-        # Ancho útil estimado recortando sangrado MPC
-        w_cropped = w * (1.0 - 2.0 * BLEED_X_FRAC)
-        dpi_cropped = round(w_cropped / CARD_W_IN)
-        dpi_raw = round(w / CARD_W_IN)
-        
-        # Clasificación del DPI
-        if dpi_cropped >= 300:
-            dpi_label = "Alta"
-        elif dpi_cropped >= 200:
-            dpi_label = "Media"
-        else:
-            dpi_label = "Baja"
-            res["is_ok"] = False
-            
-        res["dpi_est"] = f"{dpi_cropped} ({dpi_label})"
-
-        # 3. Proporción (Aspect Ratio)
-        ratio = w / h
-        # Proporción teórica con sangrado MPC: ~0.731
-        # Proporción teórica sin sangrado: ~0.714
-        # Rango aceptable para cartas estándar: 0.68 - 0.77
-        if 0.68 <= ratio <= 0.77:
-            res["aspect"] = f"{ratio:.3f} (Correcto)"
-        else:
-            res["aspect"] = f"{ratio:.3f} (Incorrecto)"
-            res["is_ok"] = False
-
-        # Convertir a numpy / OpenCV para análisis de nitidez, brillo y contraste
-        img_cv = cv2.imread(str(file_path))
-        if img_cv is None:
-            res["integrity"] = "Error OpenCV: No se pudo decodificar"
-            res["is_ok"] = False
-            return res
-
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-
-        # 4. Nitidez (Varianza del Laplaciano)
-        lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        if lap_var >= 300:
-            sharp_label = "Alta (Nítido)"
-        elif lap_var >= 100:
-            sharp_label = "Media (Aceptable)"
-        else:
-            sharp_label = "Baja (Borroso)"
-            res["is_ok"] = False
-        res["sharpness"] = f"{lap_var:.1f} ({sharp_label})"
-
-        # 5. Brillo y Contraste
-        mean_val = np.mean(gray)
-        std_val = np.std(gray)
-
-        # Clasificación de brillo
-        if mean_val < 50:
-            bright_label = "Muy Oscuro"
-            res["is_ok"] = False
-        elif mean_val > 200:
-            bright_label = "Muy Claro"
-        else:
-            bright_label = "Normal"
-        res["brightness"] = f"{mean_val:.1f} ({bright_label})"
-
-        # Clasificación de contraste
-        if std_val < 30:
-            contrast_label = "Bajo"
-            res["is_ok"] = False
-        else:
-            contrast_label = "Normal"
-        res["contrast"] = f"{std_val:.1f} ({contrast_label})"
-
-    except Exception as e:
-        res["integrity"] = f"Error inesperado: {e}"
-        res["is_ok"] = False
-
-    return res
 
 
 class AnalyzerApp:
@@ -239,49 +141,49 @@ class AnalyzerApp:
         )
         style.configure(
             "TNotebook.Tab",
-            background=BG_PANEL,
+            background=BG_HIGHLIGHT,
             foreground=TEXT_MUTED,
-            font=("Arial", 10, "bold"),
+            font=(FONT_FAMILY, 10, "bold"),
             padding=[15, 6],
             relief="flat"
         )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", BG_DARK)],
-            foreground=[("selected", TEXT_WHITE)]
+            background=[("selected", BG_PANEL)],
+            foreground=[("selected", TEXT_DARK)]
         )
 
         # Configurar estilo de Treeview
         style.configure(
             "Treeview",
             background=BG_PANEL,
-            foreground=TEXT_WHITE,
+            foreground=TEXT_DARK,
             fieldbackground=BG_PANEL,
             rowheight=28,
-            font=("Arial", 9),
+            font=(FONT_FAMILY, 9),
             borderwidth=0
         )
         style.configure(
             "Treeview.Heading",
-            background=BG_HIGHLIGHT,
-            foreground=TEXT_WHITE,
-            font=("Arial", 9, "bold"),
+            background=BG_DARK,
+            foreground=TEXT_MUTED,
+            font=(FONT_FAMILY, 9, "bold"),
             relief="flat"
         )
         style.map(
             "Treeview",
-            background=[("selected", "#005999")],
+            background=[("selected", COLOR_PRIMARY)],
             foreground=[("selected", TEXT_WHITE)]
         )
         style.map(
             "Treeview.Heading",
-            background=[("active", "#4d4d4d")]
+            background=[("active", BG_HIGHLIGHT)]
         )
 
         # Barra de progreso
         style.configure(
             "TProgressbar",
-            troughcolor=BG_PANEL,
+            troughcolor=BG_HIGHLIGHT,
             background=COLOR_PRIMARY,
             thickness=14
         )
@@ -293,7 +195,7 @@ class AnalyzerApp:
             background=BG_HIGHLIGHT,
             troughcolor=BG_DARK,
             bordercolor=BG_DARK,
-            arrowcolor=TEXT_WHITE
+            arrowcolor=TEXT_DARK
         )
         style.configure(
             "Horizontal.TScrollbar",
@@ -301,7 +203,7 @@ class AnalyzerApp:
             background=BG_HIGHLIGHT,
             troughcolor=BG_DARK,
             bordercolor=BG_DARK,
-            arrowcolor=TEXT_WHITE
+            arrowcolor=TEXT_DARK
         )
 
     def _build_ui(self):
@@ -316,16 +218,16 @@ class AnalyzerApp:
         title_label = tk.Label(
             header_frame,
             text="Analizador de Calidad de Imágenes",
-            font=("Arial", 16, "bold"),
+            font=(FONT_FAMILY, 16, "bold"),
             bg=BG_DARK,
-            fg=TEXT_WHITE
+            fg=TEXT_DARK
         )
         title_label.pack(side="left")
 
         subtitle_label = tk.Label(
             header_frame,
             text="Métricas: Resolución, DPI, Nitidez, Brillo, Contraste y Aspecto",
-            font=("Arial", 9, "italic"),
+            font=(FONT_FAMILY, 9, "italic"),
             bg=BG_DARK,
             fg=TEXT_MUTED
         )
@@ -353,7 +255,7 @@ class AnalyzerApp:
         self.status_label = tk.Label(
             self.status_frame,
             text="Listo para añadir imágenes.",
-            font=("Arial", 9),
+            font=(FONT_FAMILY, 9),
             bg=BG_DARK,
             fg=TEXT_MUTED
         )
@@ -380,9 +282,9 @@ class AnalyzerApp:
         actions_label = tk.Label(
             controls_frame,
             text="ACCIONES",
-            font=("Arial", 10, "bold"),
+            font=(FONT_FAMILY, 10, "bold"),
             bg=BG_PANEL,
-            fg=TEXT_WHITE
+            fg=TEXT_DARK
         )
         actions_label.pack(anchor="w", pady=(0, 15))
 
@@ -394,7 +296,7 @@ class AnalyzerApp:
             hover_bg=COLOR_PRIMARY_HOVER,
             hover_fg=TEXT_WHITE,
             text="Añadir Imágenes...",
-            font=("Arial", 10, "bold"),
+            font=(FONT_FAMILY, 10, "bold"),
             width=18,
             command=self._add_files
         )
@@ -407,7 +309,7 @@ class AnalyzerApp:
             hover_bg=COLOR_PRIMARY_HOVER,
             hover_fg=TEXT_WHITE,
             text="Añadir Carpeta...",
-            font=("Arial", 10, "bold"),
+            font=(FONT_FAMILY, 10, "bold"),
             width=18,
             command=self._add_directory
         )
@@ -420,7 +322,7 @@ class AnalyzerApp:
             hover_bg=COLOR_PRIMARY_HOVER,
             hover_fg=TEXT_WHITE,
             text="Añadir desde Moxfield...",
-            font=("Arial", 10, "bold"),
+            font=(FONT_FAMILY, 10, "bold"),
             width=18,
             command=self._add_moxfield_deck
         )
@@ -429,11 +331,11 @@ class AnalyzerApp:
         self.btn_clear_list = HoverButton(
             controls_frame,
             bg_color=BG_HIGHLIGHT,
-            fg_color=TEXT_WHITE,
-            hover_bg="#4d4d4d",
-            hover_fg=TEXT_WHITE,
+            fg_color=TEXT_DARK,
+            hover_bg="#d2d2d7",
+            hover_fg=TEXT_DARK,
             text="Limpiar Lista",
-            font=("Arial", 10),
+            font=(FONT_FAMILY, 10),
             width=18,
             command=self._clear_pending_list
         )
@@ -447,7 +349,7 @@ class AnalyzerApp:
             hover_bg=COLOR_SUCCESS_HOVER,
             hover_fg=TEXT_WHITE,
             text="Analizar Imágenes",
-            font=("Arial", 11, "bold"),
+            font=(FONT_FAMILY, 11, "bold"),
             width=18,
             command=self._start_analysis
         )
@@ -463,16 +365,16 @@ class AnalyzerApp:
         list_label = tk.Label(
             list_header_frame,
             text="IMÁGENES A ANALIZAR:",
-            font=("Arial", 10, "bold"),
+            font=(FONT_FAMILY, 10, "bold"),
             bg=BG_DARK,
-            fg=TEXT_WHITE
+            fg=TEXT_DARK
         )
         list_label.pack(side="left", pady=(0, 5))
 
         help_label = tk.Label(
             list_header_frame,
             text="(Doble clic en un archivo para quitarlo de la lista)",
-            font=("Arial", 8, "italic"),
+            font=(FONT_FAMILY, 8, "italic"),
             bg=BG_DARK,
             fg=TEXT_MUTED
         )
@@ -482,12 +384,14 @@ class AnalyzerApp:
         self.listbox = tk.Listbox(
             list_frame,
             bg=BG_PANEL,
-            fg=TEXT_WHITE,
-            selectbackground="#005999",
+            fg=TEXT_DARK,
+            selectbackground=COLOR_PRIMARY,
             selectforeground=TEXT_WHITE,
-            bd=0,
-            highlightthickness=0,
-            font=("Consolas", 10)
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=BG_HIGHLIGHT,
+            highlightcolor=COLOR_PRIMARY,
+            font=(FONT_MONO, 10)
         )
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<Double-Button-1>", self._remove_selected_from_listbox)
@@ -512,7 +416,7 @@ class AnalyzerApp:
             hover_bg=COLOR_DANGER_HOVER,
             hover_fg=TEXT_WHITE,
             text="Limpiar Resultados",
-            font=("Arial", 9, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             command=self._clear_treeview
         )
         btn_clear_results.pack(side="left", padx=5)
@@ -520,11 +424,11 @@ class AnalyzerApp:
         btn_export = HoverButton(
             top_bar,
             bg_color=BG_HIGHLIGHT,
-            fg_color=TEXT_WHITE,
-            hover_bg="#4d4d4d",
-            hover_fg=TEXT_WHITE,
+            fg_color=TEXT_DARK,
+            hover_bg="#d2d2d7",
+            hover_fg=TEXT_DARK,
             text="Exportar Resultados (JSON)...",
-            font=("Arial", 9),
+            font=(FONT_FAMILY, 9),
             command=self._export_results
         )
         btn_export.pack(side="left", padx=5)
@@ -532,7 +436,7 @@ class AnalyzerApp:
         help_click_label = tk.Label(
             top_bar,
             text="(Doble clic en una fila para abrir la imagen)",
-            font=("Arial", 8, "italic"),
+            font=(FONT_FAMILY, 8, "italic"),
             bg=BG_DARK,
             fg=TEXT_MUTED
         )
@@ -801,8 +705,8 @@ class AnalyzerApp:
                         self.tree.item(filepath, tags=("ok",))
 
                     # Configurar colores de los tags
-                    self.tree.tag_configure("problematic", foreground="#ffb74d")  # Naranja claro para destacar advertencias
-                    self.tree.tag_configure("ok", foreground=TEXT_WHITE)
+                    self.tree.tag_configure("problematic", foreground=COLOR_DANGER)  # Rojo macOS para destacar advertencias
+                    self.tree.tag_configure("ok", foreground=TEXT_DARK)
 
                     # Actualizar barra de progreso y estado
                     self.progress["value"] = msg["index"]
@@ -867,14 +771,14 @@ class AnalyzerApp:
         for btn in (self.btn_add_files, self.btn_add_dir, self.btn_add_moxfield, self.btn_clear_list, self.btn_analyze):
             if btn:
                 if state == "disabled":
-                    btn.config(state="disabled", bg=BG_HIGHLIGHT)
+                    btn.config(state="disabled", bg=BG_HIGHLIGHT, fg=TEXT_MUTED)
                 else:
                     if btn == self.btn_analyze:
-                        btn.config(state="normal", bg=COLOR_SUCCESS)
+                        btn.config(state="normal", bg=COLOR_SUCCESS, fg=TEXT_WHITE)
                     elif btn == self.btn_clear_list:
-                        btn.config(state="normal", bg=BG_HIGHLIGHT)
+                        btn.config(state="normal", bg=BG_HIGHLIGHT, fg=TEXT_DARK)
                     else:
-                        btn.config(state="normal", bg=COLOR_PRIMARY)
+                        btn.config(state="normal", bg=COLOR_PRIMARY, fg=TEXT_WHITE)
 
     def _add_moxfield_deck(self):
         dlg = tk.Toplevel(self.root)
@@ -896,16 +800,16 @@ class AnalyzerApp:
         lbl_title = tk.Label(
             dlg,
             text="Importar mazo desde URL (Moxfield, Archidekt, etc.)",
-            font=("Arial", 11, "bold"),
+            font=(FONT_FAMILY, 11, "bold"),
             bg=BG_DARK,
-            fg=TEXT_WHITE
+            fg=TEXT_DARK
         )
         lbl_title.pack(anchor="w", padx=15, pady=(15, 5))
 
         lbl_desc = tk.Label(
             dlg,
             text="Introduce la URL del mazo a analizar:",
-            font=("Arial", 9),
+            font=(FONT_FAMILY, 9),
             bg=BG_DARK,
             fg=TEXT_MUTED
         )
@@ -919,10 +823,10 @@ class AnalyzerApp:
             url_frame,
             textvariable=url_var,
             bg=BG_PANEL,
-            fg=TEXT_WHITE,
-            insertbackground=TEXT_WHITE,
+            fg=TEXT_DARK,
+            insertbackground=TEXT_DARK,
             relief="flat",
-            font=("Consolas", 10),
+            font=(FONT_MONO, 10),
             highlightthickness=1,
             highlightbackground=BG_HIGHLIGHT,
             highlightcolor=COLOR_PRIMARY
@@ -951,7 +855,7 @@ class AnalyzerApp:
             hover_bg=COLOR_PRIMARY_HOVER,
             hover_fg=TEXT_WHITE,
             text="Importar",
-            font=("Arial", 10, "bold"),
+            font=(FONT_FAMILY, 10, "bold"),
             command=on_import
         )
         btn_import.pack(side="right", padx=(10, 0))
@@ -959,11 +863,11 @@ class AnalyzerApp:
         btn_cancel = HoverButton(
             btn_frame,
             bg_color=BG_HIGHLIGHT,
-            fg_color=TEXT_WHITE,
-            hover_bg="#4d4d4d",
-            hover_fg=TEXT_WHITE,
+            fg_color=TEXT_DARK,
+            hover_bg="#d2d2d7",
+            hover_fg=TEXT_DARK,
             text="Cancelar",
-            font=("Arial", 10),
+            font=(FONT_FAMILY, 10),
             command=on_cancel
         )
         btn_cancel.pack(side="right")

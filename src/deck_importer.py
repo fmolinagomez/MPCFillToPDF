@@ -52,6 +52,7 @@ class DeckCard:
     collector_number: str
     quantity: int
     zone: str  # "main" | "side"
+    is_commander: bool = False
 
 
 @dataclass
@@ -110,7 +111,19 @@ def _fetch_moxfield(deck_id: str) -> FetchedDeck:
             qty = int(entry.get("quantity", 1))
             if not set_code or not collector_number:
                 continue
-            cards.append(DeckCard(name, set_code, collector_number, qty, zone))
+            is_commander = (board_name == "commanders")
+            cards.append(DeckCard(name, set_code, collector_number, qty, zone, is_commander=is_commander))
+
+    # Parse tokens from Moxfield JSON response
+    for token_card in data.get("tokens", []):
+        set_code = str(token_card.get("set", "")).lower()
+        collector_number = str(token_card.get("cn", ""))
+        name = token_card.get("name", "")
+        qty = int(token_card.get("quantity") or 1)
+        if not set_code or not collector_number:
+            continue
+        cards.append(DeckCard(name, set_code, collector_number, qty, "token"))
+
     return FetchedDeck(name=deck_name, cards=cards)
 
 
@@ -138,7 +151,8 @@ def _fetch_archidekt(deck_id: str) -> FetchedDeck:
         zone = "side" if any(c in _ARCHIDEKT_SIDE_CATEGORIES for c in categories) else "main"
         if not set_code or not collector_number:
             continue
-        cards.append(DeckCard(name, set_code, collector_number, qty, zone))
+        is_commander = "Commander" in categories
+        cards.append(DeckCard(name, set_code, collector_number, qty, zone, is_commander=is_commander))
     return FetchedDeck(name=deck_name, cards=cards)
 
 
@@ -183,13 +197,16 @@ def _fetch_tappedout(slug: str) -> FetchedDeck:
         line = line.strip()
         if not line or line.startswith("//"):
             continue
+        is_commander = "*CMDR*" in line
+        if is_commander:
+            line = line.replace("*CMDR*", "").strip()
         m = _TAPPEDOUT_SIDE_RE.match(line)
         if m:
-            cards.append(DeckCard(m.group(2).strip(), "", "", int(m.group(1)), "side"))
+            cards.append(DeckCard(m.group(2).strip(), "", "", int(m.group(1)), "side", is_commander=is_commander))
             continue
         m = _TAPPEDOUT_MAIN_RE.match(line)
         if m:
-            cards.append(DeckCard(m.group(2).strip(), "", "", int(m.group(1)), "main"))
+            cards.append(DeckCard(m.group(2).strip(), "", "", int(m.group(1)), "main", is_commander=is_commander))
 
     if not cards:
         raise DeckImportError("No se encontraron cartas en el mazo de TappedOut", "tappedout")

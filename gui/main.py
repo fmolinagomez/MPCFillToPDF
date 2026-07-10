@@ -79,6 +79,7 @@ class MtgUrlDeck:
     url: str
     cards: list[DeckCard]
     include_side: bool = False
+    include_tokens: bool = False
     name: str = ""
     back_path: Path | None = None
 
@@ -95,7 +96,13 @@ class MtgUrlDeck:
 
     @property
     def active_count(self) -> int:
-        return sum(c.quantity for c in self.cards if c.zone == "main" or self.include_side)
+        return sum(
+            c.quantity
+            for c in self.cards
+            if c.zone == "main"
+            or (c.zone == "side" and self.include_side)
+            or (c.zone == "token" and self.include_tokens)
+        )
 
 
 @dataclass
@@ -954,14 +961,50 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             if self.state.mtg_url_decks:
                 mtg_default_back = resources_dir() / "backs" / "mtg" / "back.jpg"
                 scryfall_dir = wd / "scryfall"
-                mtg_cards_with_deck: list[tuple[DeckCard, MtgUrlDeck]] = []
+                
+                # 1. Identify active cards and commanders for each deck
+                decks_with_cards = []
                 for _deck in self.state.mtg_url_decks:
-                    deck_cards = sorted(
-                        ((c, _deck) for c in _deck.cards if c.zone == "main" or _deck.include_side),
-                        key=lambda x: x[0].name.casefold(),
-                    )
-                    mtg_cards_with_deck.extend(deck_cards)
-                mtg_cards_all = [c for c, _ in mtg_cards_with_deck]
+                    deck_cards = [
+                        c for c in _deck.cards
+                        if c.zone == "main"
+                        or (c.zone == "side" and _deck.include_side)
+                        or (c.zone == "token" and _deck.include_tokens)
+                    ]
+                    
+                    # Find commander card
+                    commander_card = None
+                    for c in _deck.cards:
+                        if getattr(c, "is_commander", False):
+                            commander_card = c
+                            break
+                    if not commander_card:
+                        for c in _deck.cards:
+                            if c.zone == "main":
+                                commander_card = c
+                                break
+                    
+                    active_cards = [c for c in deck_cards if c.quantity > 0]
+                    # Sort active cards alphabetically by name
+                    active_cards.sort(key=lambda x: x.name.casefold())
+                    
+                    decks_with_cards.append({
+                        "deck": _deck,
+                        "active_cards": active_cards,
+                        "commander": commander_card
+                    })
+
+                # 2. Collect all cards to download (unique cards will be handled by downloader cache)
+                mtg_cards_all = []
+                for item in decks_with_cards:
+                    mtg_cards_all.extend(item["active_cards"])
+                    # If commander is not in active_cards, we add a copy with quantity 0 to download it
+                    if item["commander"] and not any(c.name == item["commander"].name and c.set_code == item["commander"].set_code and c.collector_number == item["commander"].collector_number for c in item["active_cards"]):
+                        from copy import copy
+                        comm_dummy = copy(item["commander"])
+                        comm_dummy.quantity = 0
+                        mtg_cards_all.append(comm_dummy)
+
                 mtg_label = f"Magic – {len(self.state.mtg_url_decks)} mazo(s)"
                 self.events.put(("progress", "download", 0, len(mtg_cards_all), mtg_label))
 
@@ -979,27 +1022,75 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     fail_policy=self._settings.scryfall_fail_policy,
                     quality_check=self._settings.scryfall_quality_check,
                     blur_threshold=self._settings.scryfall_blur_threshold,
+                    brightness_contrast_check=self._settings.scryfall_brightness_contrast_check,
                 )
 
                 if self.cancel_event.is_set():
                     self.events.put(("cancelled", run_dir))
                     return
 
+                # Map downloaded images by (set, cn)
+                image_map = {}
+                for card, front_path, back_path in dl_results:
+                    image_map[(card.set_code.lower(), card.collector_number)] = (front_path, back_path)
+
                 local_back_set = set(self.state.local_backs)
                 all_mtg_back_paths: set[Path] = {mtg_default_back}
-                for (card, front_path, back_path), (_, deck) in zip(
-                    dl_results, mtg_cards_with_deck
-                ):
-                    if back_path is not None:
-                        resolved_back = back_path
-                    elif deck.back_path in local_back_set:
-                        resolved_back = deck.back_path
-                    else:
-                        resolved_back = mtg_default_back
-                    all_mtg_back_paths.add(resolved_back)
-                    for _ in range(card.quantity):
-                        mtg_fronts.append(front_path)
-                        mtg_backs_resolved.append(resolved_back)
+                
+                use_separators = len(self.state.mtg_url_decks) > 1 and self._settings.scryfall_deck_separators
+                
+                for idx, item in enumerate(decks_with_cards):
+                    _deck = item["deck"]
+                    
+                    if use_separators:
+                        # Insert separator card at the beginning of each deck
+                        commander = item["commander"]
+                        sep_front_path = None
+                        sep_back_path = mtg_default_back
+                        
+                        if commander:
+                            comp_key = (commander.set_code.lower(), commander.collector_number)
+                            comm_front, comm_back = image_map.get(comp_key, (None, None))
+                            if comm_front and comm_front.exists():
+                                sep_name = f"separator_{idx}.jpg"
+                                sep_front_path = scryfall_dir / sep_name
+                                try:
+                                    self._create_separator_image(comm_front, _deck.display_name, sep_front_path)
+                                except Exception as e:
+                                    _log.error("Error al crear la carta separadora: %s", e)
+                                    sep_front_path = comm_front
+                                
+                                if comm_back:
+                                    sep_back_path = comm_back
+                                elif _deck.back_path in local_back_set:
+                                    sep_back_path = _deck.back_path
+                        
+                        if sep_front_path and sep_front_path.exists():
+                            mtg_fronts.append(sep_front_path)
+                            mtg_backs_resolved.append(sep_back_path)
+                            if sep_back_path:
+                                all_mtg_back_paths.add(sep_back_path)
+                                
+                    # Add deck cards
+                    for card in item["active_cards"]:
+                        comp_key = (card.set_code.lower(), card.collector_number)
+                        front_path, back_path = image_map.get(comp_key, (None, None))
+                        if not front_path or not front_path.exists():
+                            continue
+                        
+                        if back_path is not None:
+                            resolved_back = back_path
+                        elif _deck.back_path in local_back_set:
+                            resolved_back = _deck.back_path
+                        else:
+                            resolved_back = mtg_default_back
+                        
+                        all_mtg_back_paths.add(resolved_back)
+                        
+                        for _ in range(card.quantity):
+                            mtg_fronts.append(front_path)
+                            mtg_backs_resolved.append(resolved_back)
+
                 mtg_crop_extra = {
                     p: False
                     for p in set(mtg_fronts) | all_mtg_back_paths
@@ -1210,6 +1301,58 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         if run_dir.exists():
             shutil.rmtree(run_dir, ignore_errors=True)
 
+    @staticmethod
+    def _create_separator_image(base_image_path: Path, deck_name: str, output_path: Path) -> None:
+        from PIL import Image, ImageDraw, ImageFont
+        with Image.open(base_image_path) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            draw = ImageDraw.Draw(img)
+            w, h = img.size
+            font_size = int(w * 0.06)  # ~44px for 745w
+            font = None
+            for font_name in ["Arial.ttf", "Helvetica.ttf", "Arial Bold.ttf"]:
+                try:
+                    font = ImageFont.truetype(font_name, font_size)
+                    break
+                except IOError:
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+            
+            # Calculate text width/height
+            text = deck_name
+            try:
+                bbox = draw.textbbox((0, 0), text, font=font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                y_offset = bbox[1]
+            except AttributeError:
+                tw, th = draw.textsize(text, font=font)
+                y_offset = 0
+
+            # Create overlay for semi-transparent black rectangle
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            ol_draw = ImageDraw.Draw(overlay)
+            
+            pad_x = 20
+            pad_y = 15
+            rect_x0 = max(0, (w - tw) // 2 - pad_x)
+            rect_y0 = (h - th) // 2 - pad_y
+            rect_x1 = min(w, (w + tw) // 2 + pad_x)
+            rect_y1 = (h + th) // 2 + pad_y
+            
+            ol_draw.rectangle([rect_x0, rect_y0, rect_x1, rect_y1], fill=(0, 0, 0, 160))
+            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+            
+            # Draw white text
+            draw = ImageDraw.Draw(img)
+            tx = (w - tw) // 2
+            ty = (h - th) // 2 - y_offset
+            draw.text((tx, ty), text, fill=(255, 255, 255), font=font)
+            
+            img.save(output_path, "JPEG", quality=95)
+
     def _drain_events(self) -> None:
         try:
             while True:
@@ -1411,7 +1554,15 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             self._show_error_dialog(msg)
         elif kind == "mtg_url_loaded":
             _, url, cards, include_side, deck_name = ev
-            self.state.mtg_url_decks.append(MtgUrlDeck(url, cards, include_side, name=deck_name))
+            self.state.mtg_url_decks.append(
+                MtgUrlDeck(
+                    url=url,
+                    cards=cards,
+                    include_side=self._settings.scryfall_download_sideboard,
+                    include_tokens=self._settings.scryfall_download_tokens,
+                    name=deck_name
+                )
+            )
             dlg = getattr(self, "_mtg_url_dialog", None)
             if dlg and dlg.winfo_exists():
                 dlg.destroy()

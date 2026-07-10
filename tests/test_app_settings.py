@@ -185,6 +185,39 @@ class TestLoadSettings:
         settings_file.write_text(json.dumps({"scryfall_blur_threshold": -10.0}), encoding="utf-8")
         assert load_settings(tmp_path).scryfall_blur_threshold == pytest.approx(0.0)
 
+    def test_scryfall_brightness_contrast_check_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_brightness_contrast_check=False)
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_brightness_contrast_check is False
+
+    def test_scryfall_brightness_contrast_check_default_is_true(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_brightness_contrast_check is True
+
+    def test_scryfall_download_sideboard_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_download_sideboard=True)
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_download_sideboard is True
+
+    def test_scryfall_download_sideboard_default_is_false(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_download_sideboard is False
+
+    def test_scryfall_download_tokens_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_download_tokens=True)
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_download_tokens is True
+
+    def test_scryfall_download_tokens_default_is_false(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_download_tokens is False
+
+    def test_scryfall_deck_separators_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_deck_separators=True)
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_deck_separators is True
+
+    def test_scryfall_deck_separators_default_is_false(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_deck_separators is False
+
+
 
 class TestSaveSettings:
     def test_creates_parent_dirs(self, tmp_path):

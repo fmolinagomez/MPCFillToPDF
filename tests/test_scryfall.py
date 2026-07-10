@@ -387,22 +387,22 @@ class TestFetchCardLanguageAndQuality:
             patch("src.scryfall._throttled_get", return_value=_mock_resp(_NORMAL_CARD_JSON)),
         ):
             from src.scryfall import download_card_images
-            front, back = download_card_images(card, tmp_path, lang="es", quality="png")
-
+            front, back = download_card_images(card, tmp_path, lang="es", quality="png", quality_check=False)
+            
         assert front.name == "ltr_152_es_png.jpg"
 
 
 class TestScryfallQualityChecks:
     def test_check_image_quality_sharp_vs_blurry(self, tmp_path):
         from PIL import Image, ImageDraw
-        from src.scryfall import _check_image_quality
+        from src.quality import check_image_quality
         
-        # 1. Create a sharp image (high contrast edges) of size 800x1200 (meets resolution threshold)
-        sharp_img = Image.new("RGB", (800, 1200), color="white")
+        # 1. Create a sharp image (high contrast edges) of size 800x1120 (meets resolution threshold)
+        sharp_img = Image.new("RGB", (800, 1120), color="white")
         draw = ImageDraw.Draw(sharp_img)
         # Draw some high contrast lines/patterns
         for i in range(0, 800, 20):
-            draw.line([(i, 0), (i, 1200)], fill="black", width=5)
+            draw.line([(i, 0), (i, 1120)], fill="black", width=5)
             draw.line([(0, i), (800, i)], fill="black", width=5)
         
         sharp_path = tmp_path / "sharp.png"
@@ -414,20 +414,20 @@ class TestScryfallQualityChecks:
         blurry_path = tmp_path / "blurry.png"
         blurry_img.save(blurry_path)
         
-        # 3. Create a low resolution image (e.g. 100x150)
-        low_res_img = sharp_img.resize((100, 150))
+        # 3. Create a low resolution image (e.g. 100x140)
+        low_res_img = sharp_img.resize((100, 140))
         low_res_path = tmp_path / "low_res.png"
         low_res_img.save(low_res_path)
         
         # Run quality checks
         # Let's check with threshold 50.0
-        ok_sharp, score_sharp, dims_sharp = _check_image_quality(sharp_path, 50.0)
-        ok_blurry, score_blurry, dims_blurry = _check_image_quality(blurry_path, 50.0)
-        ok_low_res, score_low_res, dims_low_res = _check_image_quality(low_res_path, 50.0)
+        ok_sharp, score_sharp, dims_sharp = check_image_quality(sharp_path, 50.0)
+        ok_blurry, score_blurry, dims_blurry = check_image_quality(blurry_path, 50.0)
+        ok_low_res, score_low_res, dims_low_res = check_image_quality(low_res_path, 50.0)
         
-        assert dims_sharp == (800, 1200)
-        assert dims_blurry == (800, 1200)
-        assert dims_low_res == (100, 150)
+        assert dims_sharp == (800, 1120)
+        assert dims_blurry == (800, 1120)
+        assert dims_low_res == (100, 140)
         
         # Sharp image should pass resolution and focus score checks
         assert ok_sharp is True
@@ -444,50 +444,38 @@ class TestScryfallQualityChecks:
         from src.scryfall import download_card_images
         card = DeckCard("Dummy Card", "ltr", "152", 1, "main")
         
-        # Mock fetch_card to return a card metadata containing oracle_id
-        orig_sc = ScryfallCard("https://example.com/orig.jpg", None, oracle_id="oracle-id-123")
-        
-        # Mock _throttled_get to return a list of prints when query is made,
-        # and mock image downloads
-        search_json = {
-            "data": [
-                {"set": "set1", "collector_number": "1", "lang": "es", "oracle_id": "oracle-id-123"},
-                {"set": "set2", "collector_number": "2", "lang": "es", "oracle_id": "oracle-id-123"},
-            ]
-        }
-        
-        def mock_get(url, params=None):
-            if "cards/search" in url:
-                return _mock_resp(search_json)
-            # Otherwise we are downloading the card image or fetching metadata
-            if "orig.jpg" in url or "set1_1" in url or "set2_2" in url:
-                return _mock_resp({}, status=200)
-            return _mock_resp({"image_uris": {"large": "https://example.com/alt.jpg"}, "oracle_id": "oracle-id-123"})
-
-        # Mock check image quality: first one fails, second one passes!
-        qualities_returned = []
-        def mock_check_quality(image_path, threshold):
-            # We check the name of the file being evaluated to decide
-            # First one is original (ltr_152_es_png.jpg) -> fail
-            # Second is set1_1 (set1_1_es_png.jpg) -> pass
-            qualities_returned.append(image_path.name)
-            if "ltr_152" in image_path.name:
-                return False, 10.0, (800, 1200)
+        # Mock fetch_card to return different ScryfallCards based on requested language
+        def mock_fetch_card(s_code, col_num, lang="en", quality="large", fail_policy="english"):
+            if lang == "es":
+                return ScryfallCard("https://example.com/orig_es.jpg", None, oracle_id="oracle-id-123")
             else:
-                return True, 150.0, (800, 1200)
+                return ScryfallCard("https://example.com/orig_en.jpg", None, oracle_id="oracle-id-123")
+        
+        # Mock _throttled_get to return status 200 for mock downloads
+        def mock_get(url, params=None):
+            return _mock_resp({}, status=200)
+
+        # Mock check image quality: Spanish fails, English passes!
+        qualities_returned = []
+        def mock_check_quality(image_path, threshold, bc_check=True):
+            qualities_returned.append(image_path.name)
+            if "orig_es" in image_path.name or "_es_" in image_path.name:
+                return False, 10.0, (800, 1120)
+            else:
+                return True, 150.0, (800, 1120)
 
         with (
-            patch("src.scryfall.fetch_card", return_value=orig_sc),
+            patch("src.scryfall.fetch_card", side_effect=mock_fetch_card),
             patch("src.scryfall._throttled_get", side_effect=mock_get),
-            patch("src.scryfall._check_image_quality", side_effect=mock_check_quality),
+            patch("src.scryfall.check_image_quality", side_effect=mock_check_quality),
         ):
             # Run with quality check enabled
             front_path, back_path = download_card_images(
                 card, tmp_path, lang="es", quality="large", quality_check=True, blur_threshold=100.0
             )
             
-        # Should have found fallback print set1_1 and returned its front path
-        assert "set1_1" in front_path.name
-        # The quality check was run on original first, then set1_1
+        # Should have downloaded English original fallback print and returned its path
+        assert "en_large" in front_path.name
+        # The quality check was run on Spanish first, then English
         assert "ltr_152_es_large.jpg" in qualities_returned[0]
-        assert "set1_1_es_large.jpg" in qualities_returned[1]
+        assert "ltr_152_en_large.jpg" in qualities_returned[1]

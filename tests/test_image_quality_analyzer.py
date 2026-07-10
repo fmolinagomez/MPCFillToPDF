@@ -33,6 +33,13 @@ def app(tk_root):
             pass
 
 
+@pytest.fixture(autouse=True)
+def mock_messagebox():
+    """Mock tkinter messagebox globally to prevent blocking dialogs during testing."""
+    with patch("image_quality_analyzer.messagebox") as mock_msg:
+        yield mock_msg
+
+
 class TestAnalyzerMoxfield:
     def test_moxfield_button_exists(self, app):
         """Verify the 'Añadir desde Moxfield...' button exists and is correctly configured."""
@@ -49,10 +56,16 @@ class TestAnalyzerMoxfield:
         deck = FetchedDeck("My Deck", [card1])
         mock_fetch.return_value = deck
 
-        # 2. Mock download_deck_images to return dummy paths
+        # 2. Mock download_deck_images to call progress_cb and return dummy paths
         front_path = tmp_path / "lea_1.jpg"
         front_path.touch()
-        mock_download.return_value = [(card1, front_path, None)]
+
+        def side_effect_func(cards, dest_dir, progress_cb=None):
+            if progress_cb:
+                progress_cb(1, 1)
+            return [(card1, front_path, None)]
+
+        mock_download.side_effect = side_effect_func
 
         # Run import worker synchronously or test thread queuing
         app._moxfield_import_worker("https://www.moxfield.com/decks/dummy")

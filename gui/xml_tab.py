@@ -244,7 +244,15 @@ class XmlTabMixin:
 
             main_count = sum(c.quantity for c in deck.cards if c.zone == "main")
             side_count = sum(c.quantity for c in deck.cards if c.zone == "side")
-            count_text = f"{main_count} cartas" + (f" +{side_count} side" if side_count else "")
+            token_count = sum(c.quantity for c in deck.cards if c.zone == "token")
+            
+            count_parts = [f"{main_count} cartas"]
+            if side_count:
+                count_parts.append(f"+{side_count} side")
+            if token_count:
+                count_parts.append(f"+{token_count} tokens")
+            count_text = " ".join(count_parts)
+            
             ttk.Label(right, text=count_text, foreground="#555", anchor="w").grid(
                 row=0, column=0, sticky="w", padx=(0, 6)
             )
@@ -259,6 +267,18 @@ class XmlTabMixin:
 
                 ttk.Checkbutton(
                     right, text="Incluir sideboard", variable=side_var, command=_toggle_side
+                ).grid(row=0, column=col, padx=(0, 4))
+                col += 1
+
+            if token_count:
+                token_var = tk.BooleanVar(value=deck.include_tokens)
+
+                def _toggle_tokens(idx=i, var=token_var):
+                    self.state.mtg_url_decks[idx].include_tokens = var.get()
+                    self._refresh_generate_state()
+
+                ttk.Checkbutton(
+                    right, text="Incluir tokens", variable=token_var, command=_toggle_tokens
                 ).grid(row=0, column=col, padx=(0, 4))
                 col += 1
 

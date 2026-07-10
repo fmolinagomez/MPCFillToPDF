@@ -19,6 +19,10 @@ from src.app_settings import (
     DEFAULT_SCRYFALL_FAIL_POLICY,
     DEFAULT_SCRYFALL_QUALITY_CHECK,
     DEFAULT_SCRYFALL_BLUR_THRESHOLD,
+    DEFAULT_SCRYFALL_BC_CHECK,
+    DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD,
+    DEFAULT_SCRYFALL_DOWNLOAD_TOKENS,
+    DEFAULT_SCRYFALL_DECK_SEPARATORS,
     save_settings,
 )
 
@@ -236,6 +240,18 @@ class SettingsTabMixin:
         )
         self._sf_quality_check_cb.pack(anchor=tk.W)
 
+        # Controlar brillo y contraste
+        bc_row = ttk.Frame(sf_frame)
+        bc_row.pack(fill=tk.X, pady=4)
+        self._settings_sf_bc_check_var = tk.BooleanVar(value=self._settings.scryfall_brightness_contrast_check)
+        self._sf_bc_check_cb = ttk.Checkbutton(
+            bc_row,
+            text="Controlar brillo y contraste",
+            variable=self._settings_sf_bc_check_var,
+            command=self._on_sf_bc_check_changed,
+        )
+        self._sf_bc_check_cb.pack(anchor=tk.W)
+
         # Umbral de enfoque (blur threshold)
         blur_row = ttk.Frame(sf_frame)
         blur_row.pack(fill=tk.X, pady=4)
@@ -252,6 +268,42 @@ class SettingsTabMixin:
 
         # Configurar estado inicial de calidad
         self._update_sf_quality_check_state()
+
+        # Descargar sideboard
+        sb_row = ttk.Frame(sf_frame)
+        sb_row.pack(fill=tk.X, pady=4)
+        self._settings_sf_download_sideboard_var = tk.BooleanVar(value=self._settings.scryfall_download_sideboard)
+        self._sf_download_sideboard_cb = ttk.Checkbutton(
+            sb_row,
+            text="Descargar el sideboard",
+            variable=self._settings_sf_download_sideboard_var,
+            command=self._on_sf_download_sideboard_changed,
+        )
+        self._sf_download_sideboard_cb.pack(anchor=tk.W)
+
+        # Descargar tokens
+        tk_row = ttk.Frame(sf_frame)
+        tk_row.pack(fill=tk.X, pady=4)
+        self._settings_sf_download_tokens_var = tk.BooleanVar(value=self._settings.scryfall_download_tokens)
+        self._sf_download_tokens_cb = ttk.Checkbutton(
+            tk_row,
+            text="Descargar los tokens",
+            variable=self._settings_sf_download_tokens_var,
+            command=self._on_sf_download_tokens_changed,
+        )
+        self._sf_download_tokens_cb.pack(anchor=tk.W)
+
+        # Separadores de mazos
+        sep_row = ttk.Frame(sf_frame)
+        sep_row.pack(fill=tk.X, pady=4)
+        self._settings_sf_deck_separators_var = tk.BooleanVar(value=self._settings.scryfall_deck_separators)
+        self._sf_deck_separators_cb = ttk.Checkbutton(
+            sep_row,
+            text="Insertar separadores de mazos",
+            variable=self._settings_sf_deck_separators_var,
+            command=self._on_sf_deck_separators_changed,
+        )
+        self._sf_deck_separators_cb.pack(anchor=tk.W)
 
         ttk.Separator(outer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(8, 12))
 
@@ -362,13 +414,31 @@ class SettingsTabMixin:
         if self._settings_sf_quality_check_var.get():
             self._sf_blur_entry.configure(state="normal")
             self._sf_blur_label.configure(foreground="")
+            self._sf_bc_check_cb.configure(state="normal")
         else:
             self._sf_blur_entry.configure(state="disabled")
             self._sf_blur_label.configure(foreground="#888")
+            self._sf_bc_check_cb.configure(state="disabled")
 
     def _on_sf_quality_check_changed(self) -> None:
         self._settings.scryfall_quality_check = self._settings_sf_quality_check_var.get()
         self._update_sf_quality_check_state()
+        self._persist_settings()
+
+    def _on_sf_bc_check_changed(self) -> None:
+        self._settings.scryfall_brightness_contrast_check = self._settings_sf_bc_check_var.get()
+        self._persist_settings()
+
+    def _on_sf_download_sideboard_changed(self) -> None:
+        self._settings.scryfall_download_sideboard = self._settings_sf_download_sideboard_var.get()
+        self._persist_settings()
+
+    def _on_sf_download_tokens_changed(self) -> None:
+        self._settings.scryfall_download_tokens = self._settings_sf_download_tokens_var.get()
+        self._persist_settings()
+
+    def _on_sf_deck_separators_changed(self) -> None:
+        self._settings.scryfall_deck_separators = self._settings_sf_deck_separators_var.get()
         self._persist_settings()
 
     def _on_sf_blur_threshold_trace(self, *_) -> None:
@@ -394,6 +464,10 @@ class SettingsTabMixin:
         self._settings.scryfall_fail_policy = DEFAULT_SCRYFALL_FAIL_POLICY
         self._settings.scryfall_quality_check = DEFAULT_SCRYFALL_QUALITY_CHECK
         self._settings.scryfall_blur_threshold = DEFAULT_SCRYFALL_BLUR_THRESHOLD
+        self._settings.scryfall_brightness_contrast_check = DEFAULT_SCRYFALL_BC_CHECK
+        self._settings.scryfall_download_sideboard = DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD
+        self._settings.scryfall_download_tokens = DEFAULT_SCRYFALL_DOWNLOAD_TOKENS
+        self._settings.scryfall_deck_separators = DEFAULT_SCRYFALL_DECK_SEPARATORS
 
         self._custom_output_dir = None
         self.out_dir_var.set(str(output_dir()))
@@ -413,6 +487,10 @@ class SettingsTabMixin:
 
         self._settings_sf_quality_check_var.set(DEFAULT_SCRYFALL_QUALITY_CHECK)
         self._settings_sf_blur_threshold_var.set(f"{DEFAULT_SCRYFALL_BLUR_THRESHOLD}")
+        self._settings_sf_bc_check_var.set(DEFAULT_SCRYFALL_BC_CHECK)
+        self._settings_sf_download_sideboard_var.set(DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD)
+        self._settings_sf_download_tokens_var.set(DEFAULT_SCRYFALL_DOWNLOAD_TOKENS)
+        self._settings_sf_deck_separators_var.set(DEFAULT_SCRYFALL_DECK_SEPARATORS)
         self._update_sf_quality_check_state()
 
         self._persist_settings()

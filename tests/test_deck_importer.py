@@ -27,7 +27,14 @@ _MOXFIELD_FIXTURE = {
                 },
             }
         },
-        "commanders": {"cards": {}},
+        "commanders": {
+            "cards": {
+                "c1": {
+                    "quantity": 1,
+                    "card": {"name": "Urza, Lord High Artificer", "set": "mh1", "cn": "75"},
+                }
+            }
+        },
         "companions": {"cards": {}},
         "sideboard": {
             "cards": {
@@ -38,6 +45,9 @@ _MOXFIELD_FIXTURE = {
             }
         },
     },
+    "tokens": [
+        {"name": "Thopter", "set": "tmh1", "cn": "19", "quantity": 3}
+    ]
 }
 
 _MOXFIELD_FIXTURE_WITH_COMPANION = {
@@ -87,6 +97,15 @@ _ARCHIDEKT_FIXTURE = {
                 "collectorNumber": "1",
             },
         },
+        {
+            "quantity": 1,
+            "categories": ["Commander"],
+            "card": {
+                "oracleCard": {"name": "Kenrith, the Returned King"},
+                "edition": {"editioncode": "eld"},
+                "collectorNumber": "303",
+            },
+        },
     ],
 }
 
@@ -103,12 +122,37 @@ class TestMoxfieldFetch:
             "src.deck_importer.requests.get", return_value=self._mock_resp(_MOXFIELD_FIXTURE)
         ):
             result = fetch_deck("https://www.moxfield.com/decks/ABC123")
-        main = [c for c in result.cards if c.zone == "main"]
+        main = [c for c in result.cards if c.zone == "main" and not c.is_commander]
         assert len(main) == 2
         bolt = next(c for c in main if c.name == "Lightning Bolt")
         assert bolt.set_code == "ltr"
         assert bolt.collector_number == "152"
         assert bolt.quantity == 4
+
+    def test_extracts_commander(self):
+        with patch(
+            "src.deck_importer.requests.get", return_value=self._mock_resp(_MOXFIELD_FIXTURE)
+        ):
+            result = fetch_deck("https://www.moxfield.com/decks/ABC123")
+        main = [c for c in result.cards if c.zone == "main"]
+        cmd = next(c for c in main if c.is_commander)
+        assert cmd.name == "Urza, Lord High Artificer"
+        assert cmd.set_code == "mh1"
+        assert cmd.collector_number == "75"
+        assert cmd.quantity == 1
+
+    def test_extracts_tokens(self):
+        with patch(
+            "src.deck_importer.requests.get", return_value=self._mock_resp(_MOXFIELD_FIXTURE)
+        ):
+            result = fetch_deck("https://www.moxfield.com/decks/ABC123")
+        tokens = [c for c in result.cards if c.zone == "token"]
+        assert len(tokens) == 1
+        tok = tokens[0]
+        assert tok.name == "Thopter"
+        assert tok.set_code == "tmh1"
+        assert tok.collector_number == "19"
+        assert tok.quantity == 3
 
     def test_extracts_sideboard_cards(self):
         with patch(
@@ -158,12 +202,18 @@ class TestArchidektFetch:
             "src.deck_importer.requests.get", return_value=self._mock_resp(_ARCHIDEKT_FIXTURE)
         ):
             result = fetch_deck("https://archidekt.com/decks/12345/my-deck")
-        main = [c for c in result.cards if c.zone == "main"]
+        main = [c for c in result.cards if c.zone == "main" and not c.is_commander]
         assert len(main) == 1
         assert main[0].name == "Counterspell"
         assert main[0].set_code == "ice"
         assert main[0].collector_number == "57"
         assert main[0].quantity == 4
+
+        cmd = next(c for c in result.cards if c.is_commander)
+        assert cmd.name == "Kenrith, the Returned King"
+        assert cmd.set_code == "eld"
+        assert cmd.collector_number == "303"
+        assert cmd.quantity == 1
 
     def test_extracts_sideboard_cards(self):
         with patch(
