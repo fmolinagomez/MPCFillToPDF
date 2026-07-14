@@ -107,7 +107,7 @@ def _fetch_raw_card_data(set_code: str, collector_number: str, lang: str | None 
 
 def _extract_images(data: dict, quality: str) -> ScryfallCard:
     """Extract front and back URLs from raw card data based on quality (large or png)."""
-    q = quality if quality in ("large", "png") else "large"
+    q = quality if quality in ("large", "png", "small", "normal") else "large"
     oracle_id = data.get("oracle_id")
     if "image_uris" in data:
         front = data["image_uris"].get(q) or data["image_uris"].get("large", "")

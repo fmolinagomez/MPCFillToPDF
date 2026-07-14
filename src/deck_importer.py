@@ -61,6 +61,7 @@ class FetchedDeck:
     name: str
     cards: list[DeckCard]
     format: str = "commander"
+    raw_json: dict | None = None
 
 
 def fetch_deck(url: str) -> FetchedDeck:
@@ -129,7 +130,7 @@ def _fetch_moxfield(deck_id: str) -> FetchedDeck:
             continue
         cards.append(DeckCard(name, set_code, collector_number, qty, "token", type_line=type_line))
 
-    return FetchedDeck(name=deck_name, cards=cards, format=deck_format)
+    return FetchedDeck(name=deck_name, cards=cards, format=deck_format, raw_json=data)
 
 
 def _fetch_archidekt(deck_id: str) -> FetchedDeck:
