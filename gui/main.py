@@ -103,7 +103,7 @@ class MtgUrlDeck:
             for c in self.cards
             if c.zone == "main"
             or (c.zone == "side" and self.include_side)
-            or (c.zone == "token" and self.include_tokens)
+            or (c.zone == "token" and self.include_tokens and c.layout in ("token", "emblem", "double_faced_token"))
         )
         if self.include_separator:
             base += 1
@@ -293,27 +293,47 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             self._locals_pane.grid()
 
     def _build_scrollable_rows(self, parent: ttk.Frame):
-        """Create a Canvas + inner Frame for a vertically scrolling list of rows."""
+        """Create a Canvas + inner Frame for a vertically and horizontally scrolling list of rows."""
         holder = ttk.Frame(parent, relief=tk.SUNKEN, borderwidth=1)
         holder.grid(row=0, column=0, sticky="nsew")
         holder.columnconfigure(0, weight=1)
         holder.rowconfigure(0, weight=1)
         canvas = tk.Canvas(holder, highlightthickness=0, background="#ffffff")
-        scrollbar = ttk.Scrollbar(holder, orient=tk.VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        vsb = ttk.Scrollbar(holder, orient=tk.VERTICAL, command=canvas.yview)
+        hsb = ttk.Scrollbar(holder, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        vsb.grid(row=0, column=1, sticky="ns")
+        
         inner = ttk.Frame(canvas)
         window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind(
-            "<Configure>",
-            lambda _e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas.bind(
-            "<Configure>",
-            lambda e: canvas.itemconfigure(window_id, width=e.width),
-        )
+
+        def _update_hsb_visibility(canvas_width=None):
+            if canvas_width is None:
+                canvas.update_idletasks()
+                canvas_width = canvas.winfo_width()
+            inner_width = inner.winfo_reqwidth()
+            if inner_width > canvas_width:
+                hsb.grid(row=1, column=0, sticky="ew")
+            else:
+                hsb.grid_remove()
+
+        def _on_inner_configure(_e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            _update_hsb_visibility()
+
+        def _on_canvas_configure(e):
+            req_width = inner.winfo_reqwidth()
+            if req_width < e.width:
+                canvas.itemconfigure(window_id, width=e.width)
+            else:
+                canvas.itemconfigure(window_id, width=0)
+            _update_hsb_visibility(e.width)
+
+        inner.bind("<Configure>", _on_inner_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
         return canvas, inner, window_id
+
 
     @staticmethod
     def _decode_drop(files) -> list[Path]:
@@ -974,7 +994,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                         c for c in _deck.cards
                         if c.zone == "main"
                         or (c.zone == "side" and _deck.include_side)
-                        or (c.zone == "token" and _deck.include_tokens)
+                        or (c.zone == "token" and _deck.include_tokens and c.layout in ("token", "emblem", "double_faced_token"))
                     ]
                     
                     # Find commander card
@@ -1058,14 +1078,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                             _log.error("Error al crear la carta separadora: %s", e)
                             sep_front_path = None
                         
-                        if commander:
-                            comp_key = (commander.set_code.lower(), commander.collector_number)
-                            _, comm_back = image_map.get(comp_key, (None, None))
-                            if comm_back:
-                                sep_back_path = comm_back
-                            elif _deck.back_path in local_back_set:
-                                sep_back_path = _deck.back_path
-                        elif _deck.back_path in local_back_set:
+                        if _deck.back_path in local_back_set:
                             sep_back_path = _deck.back_path
                         
                         if sep_front_path and sep_front_path.exists():
@@ -1270,7 +1283,17 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             if timing_str:
                 timing_str += f"  Total: {_fmt_dur(total_dur)}"
 
-            self.events.put(("done", generated, manifest, run_dir, timing_str))
+            skipped_tokens_count = 0
+            if self.state.mtg_url_decks:
+                for _deck in self.state.mtg_url_decks:
+                    if _deck.include_tokens:
+                        skipped_tokens_count += sum(
+                            c.quantity for c in _deck.cards
+                            if c.zone == "token"
+                            and c.layout not in ("token", "emblem", "double_faced_token")
+                        )
+
+            self.events.put(("done", generated, manifest, run_dir, timing_str, skipped_tokens_count))
         except DownloadPartialError as e:
             self.events.put(
                 (
@@ -1431,22 +1454,22 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         
         for f_name in title_font_names:
             try: font_title = ImageFont.truetype(f_name, title_size); break
-            except IOError: continue
+            except OSError: continue
         if font_title is None: font_title = ImageFont.load_default()
             
         for f_name in sub_font_names:
             try: font_sub = ImageFont.truetype(f_name, sub_size); break
-            except IOError: continue
+            except OSError: continue
         if font_sub is None: font_sub = ImageFont.load_default()
             
         for f_name in stats_header_names:
             try: font_stats_header = ImageFont.truetype(f_name, stats_header_size); break
-            except IOError: continue
+            except OSError: continue
         if font_stats_header is None: font_stats_header = ImageFont.load_default()
             
         for f_name in stats_val_names:
             try: font_stats_val = ImageFont.truetype(f_name, stats_val_size); break
-            except IOError: continue
+            except OSError: continue
         if font_stats_val is None: font_stats_val = ImageFont.load_default()
             
         # Draw Title (Deck Name)
@@ -1466,7 +1489,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             title_size -= 2
             for f_name in title_font_names:
                 try: font_title = ImageFont.truetype(f_name, title_size); break
-                except IOError: continue
+                except OSError: continue
                 
         try:
             bbox_t = draw.textbbox((0, 0), title_text, font=font_title)
@@ -1673,10 +1696,17 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             self._finish_running()
             self._show_error_dialog("\n\n".join(parts))
         elif kind == "done":
-            _, pdfs, manifest, run_dir, timing_str = ev
+            if len(ev) == 6:
+                _, pdfs, manifest, run_dir, timing_str, skipped_tokens_count = ev
+            else:
+                _, pdfs, manifest, run_dir, timing_str = ev
+                skipped_tokens_count = 0
             self.progress["value"] = 100
             extra = f" Resumen en {manifest.name}." if manifest else ""
-            self.status_var.set(f"Listo. {len(pdfs)} PDF(s) generados en {run_dir.name}.{extra}")
+            status_text = f"Listo. {len(pdfs)} PDF(s) generados en {run_dir.name}.{extra}"
+            if skipped_tokens_count > 0:
+                status_text += f" (Aviso: {skipped_tokens_count} token(s) omitidos por layout no válido)"
+            self.status_var.set(status_text)
             if timing_str:
                 self.timing_var.set(f"Tiempos — {timing_str}")
                 _log.info("Phase timings: %s", timing_str)

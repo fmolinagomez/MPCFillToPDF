@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
+
 import requests
 
 from src.cancellation import Cancelled
@@ -50,6 +51,7 @@ class ScryfallCard:
     front_url: str
     back_url: str | None
     oracle_id: str | None = None
+    layout: str = ""
 
 
 def _throttled_get(url: str, params: dict | None = None) -> requests.Response:
@@ -109,18 +111,19 @@ def _extract_images(data: dict, quality: str) -> ScryfallCard:
     """Extract front and back URLs from raw card data based on quality (large or png)."""
     q = quality if quality in ("large", "png", "small", "normal") else "large"
     oracle_id = data.get("oracle_id")
+    layout = data.get("layout", "")
     if "image_uris" in data:
         front = data["image_uris"].get(q) or data["image_uris"].get("large", "")
         if not front:
             raise ScryfallError("No se encontró imagen de frente en image_uris")
-        return ScryfallCard(front, None, oracle_id)
+        return ScryfallCard(front, None, oracle_id, layout)
     elif "card_faces" in data:
         faces = data["card_faces"]
         front = faces[0].get("image_uris", {}).get(q) or faces[0].get("image_uris", {}).get("large", "")
         back = faces[1].get("image_uris", {}).get(q) or faces[1].get("image_uris", {}).get("large") if len(faces) > 1 else None
         if not front:
             raise ScryfallError("No se encontró imagen de frente en card_faces")
-        return ScryfallCard(front, back, oracle_id)
+        return ScryfallCard(front, back, oracle_id, layout)
     else:
         raise ScryfallError("Formato de respuesta inesperado de Scryfall (falta image_uris o card_faces)")
 
@@ -250,14 +253,23 @@ def download_card_images(
     quality_check: bool = True,
     blur_threshold: float = 100.0,
     brightness_contrast_check: bool = True,
-) -> tuple[Path, Path | None]:
-    """Download front and (for MDFCs) back images. Returns (front_path, back_path|None)."""
+) -> tuple[Path | None, Path | None]:
+    """Download front and (for MDFCs) back images. Returns (front_path|None, back_path|None)."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     set_code = card.set_code
     collector_number = card.collector_number
     if not set_code or not collector_number:
         set_code, collector_number = fetch_card_by_name(card.name)
     scryfall = fetch_card(set_code, collector_number, lang=lang, quality=quality, fail_policy=fail_policy)
+
+    if getattr(card, "zone", None) == "token":
+        layout = getattr(scryfall, "layout", "")
+        if layout not in ("token", "emblem", "double_faced_token"):
+            _log.info(
+                "Skipping token download for '%s' because its layout is '%s' (not 'token', 'emblem', or 'double_faced_token')",
+                card.name, layout
+            )
+            return None, None
 
     def _download_and_check(sc_card: ScryfallCard, s_code: str, col_num: str, l_code: str) -> tuple[Path, Path | None, bool, float, tuple[int, int]]:
         slug = f"{s_code.lower()}_{col_num}_{l_code}_{quality}"
@@ -336,11 +348,11 @@ def download_deck_images(
 ) -> list[tuple[DeckCard, Path, Path | None]]:
     """Download images for all unique cards in parallel.
 
-    Returns an ordered list of (card, front_path, back_path|None) matching the input order.
+    Returns an ordered list of (card, front_path, back_path|None) matching the input order (excluding skipped ones).
     """
     total = len(cards)
     done = 0
-    id_to_result: dict[int, tuple[DeckCard, Path, Path | None]] = {}
+    id_to_result: dict[int, tuple[DeckCard, Path | None, Path | None]] = {}
 
     with ThreadPoolExecutor(max_workers=SCRYFALL_THREADS) as executor:
         futures = {
@@ -374,4 +386,4 @@ def download_deck_images(
                 f.cancel()
             raise
 
-    return [id_to_result[i] for i in range(len(cards))]
+    return [id_to_result[i] for i in range(len(cards)) if id_to_result[i][1] is not None]

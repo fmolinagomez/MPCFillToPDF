@@ -54,6 +54,7 @@ class DeckCard:
     zone: str  # "main" | "side"
     is_commander: bool = False
     type_line: str = ""
+    layout: str = ""
 
 
 @dataclass

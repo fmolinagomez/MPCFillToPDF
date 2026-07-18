@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -21,6 +22,8 @@ from src.deck_importer import DeckImportError, fetch_deck
 from src.parser import parse
 from src.precheck import analyze
 from src.validator import validate
+
+_log = logging.getLogger(__name__)
 
 
 class XmlTabMixin:
@@ -244,7 +247,11 @@ class XmlTabMixin:
 
             main_count = sum(c.quantity for c in deck.cards if c.zone == "main")
             side_count = sum(c.quantity for c in deck.cards if c.zone == "side")
-            token_count = sum(c.quantity for c in deck.cards if c.zone == "token")
+            token_count = sum(
+                c.quantity
+                for c in deck.cards
+                if c.zone == "token" and c.layout in ("token", "emblem", "double_faced_token")
+            )
             
             count_parts = [f"{main_count} cartas"]
             if side_count:
@@ -448,6 +455,22 @@ class XmlTabMixin:
             def _run():
                 try:
                     result = fetch_deck(url)
+                    # Query Scryfall layout for all tokens to make active_count and page estimation accurate!
+                    from src.scryfall import fetch_card, fetch_card_by_name
+                    for c in result.cards:
+                        if c.zone == "token":
+                            try:
+                                set_code = c.set_code
+                                col_num = c.collector_number
+                                if not set_code or not col_num:
+                                    set_code, col_num = fetch_card_by_name(c.name)
+                                    c.set_code = set_code
+                                    c.collector_number = col_num
+                                sc_card = fetch_card(set_code, col_num)
+                                c.layout = getattr(sc_card, "layout", "")
+                            except Exception as e:
+                                _log.warning("No se pudo obtener el layout de Scryfall para el token %s: %s", c.name, e)
+                                c.layout = ""
                     self.events.put(("mtg_url_loaded", url, result.cards, False, result.name, result.format))
                 except DeckImportError as exc:
                     self.events.put(("mtg_url_error", str(exc)))

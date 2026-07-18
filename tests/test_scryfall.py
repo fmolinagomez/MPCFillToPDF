@@ -395,6 +395,7 @@ class TestFetchCardLanguageAndQuality:
 class TestScryfallQualityChecks:
     def test_check_image_quality_sharp_vs_blurry(self, tmp_path):
         from PIL import Image, ImageDraw
+
         from src.quality import check_image_quality
         
         # 1. Create a sharp image (high contrast edges) of size 800x1120 (meets resolution threshold)
@@ -479,3 +480,72 @@ class TestScryfallQualityChecks:
         # The quality check was run on Spanish first, then English
         assert "ltr_152_es_large.jpg" in qualities_returned[0]
         assert "ltr_152_en_large.jpg" in qualities_returned[1]
+
+
+class TestTokenLayoutFiltering:
+    def setup_method(self):
+        import src.scryfall as sf
+        sf._cache.clear()
+
+    def test_download_token_with_valid_layout(self, tmp_path):
+        from src.scryfall import download_card_images
+        card = DeckCard("Zombie Token", "unf", "1", 1, "token")
+        
+        # A token card returning a valid layout
+        mock_scryfall = ScryfallCard("https://example.com/zombie.jpg", None, "oracle-id-zombie", "token")
+        
+        # Mock responses and image check
+        with (
+            patch("src.scryfall.fetch_card", return_value=mock_scryfall),
+            patch("src.scryfall._throttled_get", return_value=_mock_resp(b"DATA")),
+            patch("src.scryfall.check_image_quality", return_value=(True, 150.0, (800, 1120))),
+        ):
+            f_path, b_path = download_card_images(card, tmp_path, quality_check=True)
+            
+        assert f_path is not None
+        assert "unf_1_en_large" in f_path.name
+
+    def test_download_token_with_invalid_layout_returns_none(self, tmp_path):
+        from src.scryfall import download_card_images
+        card = DeckCard("Zombie Token", "unf", "1", 1, "token")
+        
+        # A token card returning an invalid layout (e.g. normal)
+        mock_scryfall = ScryfallCard("https://example.com/zombie.jpg", None, "oracle-id-zombie", "normal")
+        
+        with patch("src.scryfall.fetch_card", return_value=mock_scryfall):
+            f_path, b_path = download_card_images(card, tmp_path)
+            
+        assert f_path is None
+        assert b_path is None
+
+    def test_download_deck_images_filters_out_invalid_layout_tokens(self, tmp_path):
+        from src.scryfall import download_deck_images
+        cards = [
+            DeckCard("Valid Token", "unf", "1", 1, "token"),
+            DeckCard("Invalid Token", "unf", "2", 1, "token"),
+            DeckCard("Emblem Token", "unf", "3", 1, "token"),
+            DeckCard("Double Faced Token", "unf", "4", 1, "token"),
+        ]
+        
+        def mock_fetch_card(set_code, col_num, **kwargs):
+            if col_num == "1":
+                return ScryfallCard("https://example.com/1.jpg", None, "oracle-1", "token")
+            elif col_num == "2":
+                return ScryfallCard("https://example.com/2.jpg", None, "oracle-2", "normal")
+            elif col_num == "3":
+                return ScryfallCard("https://example.com/3.jpg", None, "oracle-3", "emblem")
+            else:
+                return ScryfallCard("https://example.com/4.jpg", None, "oracle-4", "double_faced_token")
+
+        with (
+            patch("src.scryfall.fetch_card", side_effect=mock_fetch_card),
+            patch("src.scryfall._throttled_get", return_value=_mock_resp(b"DATA")),
+            patch("src.scryfall.check_image_quality", return_value=(True, 150.0, (800, 1120))),
+        ):
+            results = download_deck_images(cards, tmp_path, quality_check=False)
+            
+        assert len(results) == 3
+        # Only Valid Token, Emblem Token, and Double Faced Token should remain
+        assert results[0][0].name == "Valid Token"
+        assert results[1][0].name == "Emblem Token"
+        assert results[2][0].name == "Double Faced Token"

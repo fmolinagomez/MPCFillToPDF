@@ -1,11 +1,11 @@
-import tkinter as tk
-from unittest.mock import patch, MagicMock
-from pathlib import Path
-import pytest
 import queue
+import tkinter as tk
+from unittest.mock import patch
 
-from src.deck_importer import FetchedDeck, DeckCard
+import pytest
+
 from image_quality_analyzer import AnalyzerApp
+from src.deck_importer import DeckCard, FetchedDeck
 
 
 @pytest.fixture(scope="module")

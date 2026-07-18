@@ -290,3 +290,270 @@ class TestMtgBackChange:
         app.state.local_back_crop.clear()
         app._refresh_xml_rows()
         assert deck.back_path is None
+
+
+# ---------------------------------------------------------------------------
+# Token Layout Filtering GUI tests
+# ---------------------------------------------------------------------------
+
+
+class TestMtgUrlDeckActiveCount:
+    def test_active_count_filters_invalid_token_layouts(self):
+        from gui.main import MtgUrlDeck
+        from src.deck_importer import DeckCard
+        
+        cards = [
+            DeckCard("Valid Token", "unf", "1", 1, "token", layout="token"),
+            DeckCard("Invalid Token", "unf", "2", 2, "token", layout="normal"),
+            DeckCard("Emblem Token", "unf", "3", 1, "token", layout="emblem"),
+            DeckCard("Main Card", "m21", "1", 4, "main"),
+        ]
+        deck = MtgUrlDeck(url="https://moxfield.com/decks/abc", cards=cards, include_tokens=True)
+        # Main cards (4) + Valid Token (1) + Emblem Token (1) = 6
+        assert deck.active_count == 6
+
+        # If include_tokens is False:
+        deck.include_tokens = False
+        assert deck.active_count == 4
+
+
+class TestGuiHandleDoneWithWarnings:
+    def test_done_event_updates_status_var_with_skipped_tokens(self, app):
+        from pathlib import Path
+        
+        event = ("done", [Path("dummy.pdf")], None, Path("out_dir"), "PDF: 1s", 3)
+        app._handle(event)
+        
+        assert "Aviso: 3 token(s) omitidos por layout no válido" in app.status_var.get()
+        assert "Listo" in app.status_var.get()
+
+    def test_done_event_no_skipped_tokens(self, app):
+        from pathlib import Path
+        
+        event = ("done", [Path("dummy.pdf")], None, Path("out_dir"), "PDF: 1s", 0)
+        app._handle(event)
+        
+        assert "omitidos" not in app.status_var.get()
+        assert "Listo" in app.status_var.get()
+
+
+class TestScrollableRowsHorizontalScrollbar:
+    def test_scrollable_rows_has_horizontal_scrollbar(self, app):
+        from tkinter import ttk
+        parent = tk.Frame(app.root)
+        parent.pack()
+        canvas, inner, window_id = app._build_scrollable_rows(parent)
+        
+        # Create a very wide label inside inner
+        dummy = tk.Label(inner, text="A very long label" * 20)
+        dummy.pack()
+        
+        app.root.update_idletasks()
+        
+        # Make canvas width small to force overflow
+        canvas.configure(width=100)
+        app.root.update_idletasks()
+        
+        # Trigger configure event
+        canvas.event_generate("<Configure>", width=100, height=200)
+        app.root.update_idletasks()
+        
+        holder = canvas.master
+        hsb = None
+        for child in holder.winfo_children():
+            wcls = child.winfo_class()
+            if wcls == "TScrollbar":
+                orient = str(child.cget("orient"))
+                if orient == "horizontal":
+                    hsb = child
+                    break
+                
+        assert hsb is not None
+        # Should be gridded because of overflow
+        assert bool(hsb.grid_info()) is True
+        
+        # Now remove the wide label, make the content narrow, and check if it disappears
+        dummy.destroy()
+        dummy2 = tk.Label(inner, text="Short")
+        dummy2.pack()
+        app.root.update_idletasks()
+        
+        # Make canvas very wide to ensure no overflow
+        canvas.configure(width=1000)
+        app.root.update_idletasks()
+        canvas.event_generate("<Configure>", width=1000, height=200)
+        app.root.update_idletasks()
+        
+        # Should no longer be gridded
+        assert bool(hsb.grid_info()) is False
+
+
+class TestSeparatorBackResolution:
+    def test_separator_back_always_uses_deck_back_or_default(self, app, tmp_path):
+        from unittest.mock import patch, MagicMock
+        from pathlib import Path
+        from gui.main import MtgUrlDeck
+        from src.deck_importer import DeckCard
+
+        # 1. Setup the deck
+        # We need a commander card
+        commander = DeckCard("Jace", "m21", "1", 1, "main", is_commander=True)
+        # We need a normal card
+        card1 = DeckCard("Opt", "m21", "2", 4, "main")
+        
+        # Custom deck back path
+        custom_back = tmp_path / "custom_back.jpg"
+        custom_back.touch()
+        
+        deck = MtgUrlDeck(
+            url="https://moxfield.com/decks/abc",
+            name="My Deck",
+            cards=[commander, card1],
+            include_separator=True,
+            back_path=custom_back,
+            format="commander"
+        )
+        
+        app.state.mtg_url_decks = [deck]
+        app.state.local_backs = [custom_back]
+        
+        # Mock scryfall_download to return paths for download
+        # (card, front_path, back_path)
+        front_jace = tmp_path / "jace_front.jpg"
+        front_jace.touch()
+        back_jace = tmp_path / "jace_back.jpg"
+        back_jace.touch()
+        
+        front_opt = tmp_path / "opt_front.jpg"
+        front_opt.touch()
+        
+        # Commander has a specific back (back_jace), e.g., if it's double-faced
+        dl_results = [
+            (commander, front_jace, back_jace),
+            (card1, front_opt, None)
+        ]
+        
+        # Keep track of arguments passed to run_locals_only
+        captured_args = {}
+        def mock_run_locals_only(*args, **kwargs):
+            captured_args["extra_fronts"] = args[0]
+            captured_args["default_back"] = args[1]
+            captured_args["extra_backs"] = kwargs.get("extra_backs")
+            return [Path("output.pdf")]
+
+        # Mock dependencies
+        with (
+            patch("gui.main.work_dir", return_value=tmp_path),
+            patch("gui.main.scryfall_download", return_value=dl_results) as mock_dl,
+            patch.object(app, "_create_separator_image") as mock_create_sep,
+            patch("gui.main.run_locals_only", side_effect=mock_run_locals_only) as mock_run,
+            patch("gui.main.resources_dir", return_value=tmp_path)
+        ):
+            # Create a mock mtg default back file
+            mtg_default_back = tmp_path / "backs" / "mtg" / "back.jpg"
+            mtg_default_back.parent.mkdir(parents=True, exist_ok=True)
+            mtg_default_back.touch()
+            
+            # Mock _create_separator_image to create the output file so it exists
+            def side_effect_create_sep(name, fmt, cards, path):
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).touch()
+            mock_create_sep.side_effect = side_effect_create_sep
+
+            # Call _work
+            app._work(None, None, False, "#000000", "ticks", 0.5, False, False, False)
+            
+        extra_fronts = captured_args.get("extra_fronts")
+        extra_backs = captured_args.get("extra_backs")
+        
+        assert extra_fronts is not None
+        assert extra_backs is not None
+        
+        # separator_0.jpg should be the first front
+        assert "separator_0.jpg" in extra_fronts[0].name
+        
+        # The separator's back must be the deck's custom back
+        assert extra_backs[0] == custom_back
+
+    def test_separator_back_falls_back_to_default_mtg_back(self, app, tmp_path):
+        from unittest.mock import patch, MagicMock
+        from pathlib import Path
+        from gui.main import MtgUrlDeck
+        from src.deck_importer import DeckCard
+
+        # 1. Setup the deck
+        # We need a commander card
+        commander = DeckCard("Jace", "m21", "1", 1, "main", is_commander=True)
+        # We need a normal card
+        card1 = DeckCard("Opt", "m21", "2", 4, "main")
+        
+        deck = MtgUrlDeck(
+            url="https://moxfield.com/decks/abc",
+            name="My Deck",
+            cards=[commander, card1],
+            include_separator=True,
+            back_path=None, # No custom back
+            format="commander"
+        )
+        
+        app.state.mtg_url_decks = [deck]
+        # No local backs assigned
+        app.state.local_backs = []
+        
+        # Mock scryfall_download to return paths for download
+        front_jace = tmp_path / "jace_front.jpg"
+        front_jace.touch()
+        back_jace = tmp_path / "jace_back.jpg"
+        back_jace.touch()
+        
+        front_opt = tmp_path / "opt_front.jpg"
+        front_opt.touch()
+        
+        dl_results = [
+            (commander, front_jace, back_jace),
+            (card1, front_opt, None)
+        ]
+        
+        captured_args = {}
+        def mock_run_locals_only(*args, **kwargs):
+            captured_args["extra_fronts"] = args[0]
+            captured_args["default_back"] = args[1]
+            captured_args["extra_backs"] = kwargs.get("extra_backs")
+            return [Path("output.pdf")]
+
+        # Mock dependencies
+        with (
+            patch("gui.main.work_dir", return_value=tmp_path),
+            patch("gui.main.scryfall_download", return_value=dl_results) as mock_dl,
+            patch.object(app, "_create_separator_image") as mock_create_sep,
+            patch("gui.main.run_locals_only", side_effect=mock_run_locals_only) as mock_run,
+            patch("gui.main.resources_dir", return_value=tmp_path)
+        ):
+            # Create a mock mtg default back file
+            mtg_default_back = tmp_path / "backs" / "mtg" / "back.jpg"
+            mtg_default_back.parent.mkdir(parents=True, exist_ok=True)
+            mtg_default_back.touch()
+            
+            def side_effect_create_sep(name, fmt, cards, path):
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).touch()
+            mock_create_sep.side_effect = side_effect_create_sep
+
+            # Call _work
+            app._work(None, None, False, "#000000", "ticks", 0.5, False, False, False)
+            
+        extra_fronts = captured_args.get("extra_fronts")
+        extra_backs = captured_args.get("extra_backs")
+        
+        assert extra_fronts is not None
+        assert extra_backs is not None
+        
+        # separator_0.jpg should be the first front
+        assert "separator_0.jpg" in extra_fronts[0].name
+        
+        # The separator's back must be the default MTG back, NOT back_jace!
+        assert extra_backs[0] == mtg_default_back
+
+
+
+

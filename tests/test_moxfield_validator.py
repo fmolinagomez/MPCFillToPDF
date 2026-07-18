@@ -1,9 +1,8 @@
-from unittest.mock import MagicMock, patch
-import pytest
 import tkinter as tk
+from unittest.mock import MagicMock, patch
 
+from gui.moxfield_validator import ValidatorApp
 from src.deck_importer import DeckCard
-from gui.moxfield_validator import ValidatorApp, CardValidationResult
 
 
 def _mock_json_resp(json_data, status=200):
@@ -166,5 +165,59 @@ class TestCardValidationLogic:
                 
             assert res.status == "🔴 Error"
             assert "Error en Scryfall" in res.details
+        finally:
+            root.destroy()
+
+    def test_validate_token_layout_valid(self):
+        card = DeckCard("Zombie Token", "unf", "1", 1, "token")
+        mock_data = {
+            "name": "Zombie Token",
+            "set": "unf",
+            "collector_number": "1",
+            "highres_image": True,
+            "digital": False,
+            "rarity": "common",
+            "type_line": "Token Creature - Zombie",
+            "layout": "token",
+            "image_uris": {
+                "small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"
+            }
+        }
+        
+        root = tk.Tk()
+        try:
+            app = ValidatorApp(root)
+            with patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
+                res = app._validate_single_card(card)
+                
+            assert res.status == "🟢 Válido"
+            assert "Todo correcto" in res.details
+        finally:
+            root.destroy()
+
+    def test_validate_token_layout_invalid(self):
+        card = DeckCard("Zombie Token", "unf", "1", 1, "token")
+        mock_data = {
+            "name": "Zombie Token",
+            "set": "unf",
+            "collector_number": "1",
+            "highres_image": True,
+            "digital": False,
+            "rarity": "common",
+            "type_line": "Token Creature - Zombie",
+            "layout": "normal",
+            "image_uris": {
+                "small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"
+            }
+        }
+        
+        root = tk.Tk()
+        try:
+            app = ValidatorApp(root)
+            with patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
+                res = app._validate_single_card(card)
+                
+            assert res.status == "⚠️ Advertencia"
+            assert "Se omitirá al descargar" in res.details
         finally:
             root.destroy()

@@ -9,14 +9,12 @@ from __future__ import annotations
 import json
 import logging
 import queue
-import sys
 import threading
 import tkinter as tk
 from dataclasses import dataclass
-from pathlib import Path
 from tkinter import messagebox, ttk
 
-from PIL import Image, ImageDraw, ImageFont, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 from gui.paths import work_dir
 from gui.widgets import attach_context_menu
@@ -334,9 +332,13 @@ class ValidatorApp:
             digital = data.get("digital", False)
             type_line = data.get("type_line", card.type_line)
             rarity = data.get("rarity", "unknown")
+            layout = data.get("layout", "")
             
             status = "🟢 Válido"
             details_list = []
+            if card.zone == "token" and layout not in ("token", "emblem", "double_faced_token"):
+                status = "⚠️ Advertencia"
+                details_list.append(f"Se omitirá al descargar (layout '{layout}' no es token/emblem/double_faced_token)")
             if resolved_by_name:
                 status = "⚠️ Advertencia"
                 details_list.append("Edición/Nº faltante (resuelto por nombre)")

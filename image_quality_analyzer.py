@@ -6,14 +6,14 @@ de una o varias imágenes antes de procesarlas para PDF.
 """
 
 import os
-import sys
-import time
 import queue
-import threading
 import subprocess
-from pathlib import Path
+import sys
+import threading
+import time
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 
 # Asegurar que el directorio raíz está en sys.path para importaciones de src
 SCRIPT_DIR = Path(__file__).parent.absolute()
@@ -25,9 +25,10 @@ try:
     import cv2
     import numpy as np
     from PIL import Image
-    from src.deck_importer import fetch_deck, DeckImportError
-    from src.scryfall import download_deck_images, ScryfallError
+
+    from src.deck_importer import DeckImportError, fetch_deck
     from src.quality import analyze_single_image
+    from src.scryfall import ScryfallError, download_deck_images
 except ImportError as e:
     root = tk.Tk()
     root.withdraw()

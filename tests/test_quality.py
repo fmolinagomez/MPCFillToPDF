@@ -1,7 +1,9 @@
+
 import pytest
-from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
-from src.quality import check_image_quality, analyze_single_image
+
+from src.quality import analyze_single_image, check_image_quality
+
 
 @pytest.fixture
 def test_images(tmp_path):

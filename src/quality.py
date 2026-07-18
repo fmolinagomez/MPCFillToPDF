@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+
 import cv2
 import numpy as np
 from PIL import Image
