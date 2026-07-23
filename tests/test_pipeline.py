@@ -600,6 +600,29 @@ class TestRunDeckUrl:
         assert results[0].exists()
         assert results[0].stat().st_size > 0
 
+    def test_uses_fetched_deck_name(self, tmp_path):
+        res = self._make_resources(tmp_path)
+        front = make_rgb_image(tmp_path / "front.jpg")
+        deck = FetchedDeck(
+            name="My Awesome Commander Deck <3",
+            cards=[DeckCard("Lightning Bolt", "lea", "1", 1, "main")],
+        )
+        dl_result = [(deck.cards[0], front, None)]
+
+        with (
+            patch("src.pipeline.fetch_deck", return_value=deck),
+            patch("src.pipeline.download_deck_images", return_value=dl_result),
+            patch("src.pipeline.resources_dir", return_value=res),
+        ):
+            results = run_deck_url(
+                "https://moxfield.com/decks/abc",
+                tmp_path / "out",
+                tmp_path / "work",
+                "generic_name",
+            )
+        assert len(results) == 1
+        assert results[0].name == "My Awesome Commander Deck _3.pdf"
+
     def test_sideboard_excluded_by_default(self, tmp_path):
         res = self._make_resources(tmp_path)
         front = make_rgb_image(tmp_path / "front.jpg")

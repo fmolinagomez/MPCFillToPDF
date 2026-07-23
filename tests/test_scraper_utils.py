@@ -2,7 +2,22 @@
 
 from PIL import Image
 
-from src.scraper_utils import generate_fallback_back
+from src.scraper_utils import generate_fallback_back, sanitize_filename
+
+
+class TestSanitizeFilename:
+    def test_basic_name(self):
+        assert sanitize_filename("My Deck") == "My Deck"
+
+    def test_removes_invalid_characters(self):
+        assert sanitize_filename("Deck: /\\*?\"<>| Name") == "Deck_ ________ Name"
+
+    def test_strips_leading_trailing_spaces_and_dots(self):
+        assert sanitize_filename(" . My Deck . ") == "My Deck"
+
+    def test_empty_fallback(self):
+        assert sanitize_filename("::???::") == "deck"
+
 
 
 class TestGenerateFallbackBack:

@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize a deck name to be a safe, cross-platform filename."""
+    # Replace invalid or problematic characters with underscores: \ / : * ? " < > |
+    sanitized = re.sub(r'[\\/*?:"<>|]', "_", name)
+    # Strip spaces and dots from both ends
+    sanitized = sanitized.strip(". ")
+    if not any(c not in " ._" for c in sanitized):
+        return "deck"
+    return sanitized
+
 
 
 def resources_dir() -> Path:

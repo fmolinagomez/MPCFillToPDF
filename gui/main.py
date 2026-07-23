@@ -67,7 +67,7 @@ from src.precheck import (
 from src.rb_scraper import RBDeck, get_rb_backs
 from src.rb_scraper import download_images as rb_download
 from src.rb_scraper import expand_deck as rb_expand
-from src.scraper_utils import resources_dir
+from src.scraper_utils import resources_dir, sanitize_filename
 from src.scryfall import download_deck_images as scryfall_download
 from src.validator import ValidationWarning
 
@@ -1222,18 +1222,41 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     default_back = mtg_default_back
                 else:
                     raise ValueError("No se encontró reverso por defecto.")
-                parts = [
-                    p
-                    for p in [
-                        "locales" if self.state.local_fronts else None,
-                        "One Piece" if op_fronts else None,
-                        "Riftbound" if rb_fronts else None,
-                        "Lorcana" if lorcana_fronts else None,
-                        "magic_url" if mtg_fronts else None,
+                total_decks = (
+                    len(self.state.mtg_url_decks)
+                    + len(self._op_decks)
+                    + len(self._rb_decks)
+                    + len(self._lorcana_decks)
+                )
+                if total_decks == 1 and not self.state.local_fronts:
+                    if self.state.mtg_url_decks:
+                        deck_name = self.state.mtg_url_decks[0].name
+                    elif self._op_decks:
+                        deck_name = self._op_decks[0].name
+                    elif self._rb_decks:
+                        deck_name = self._rb_decks[0].name
+                    elif self._lorcana_decks:
+                        deck_name = self._lorcana_decks[0].name
+                    else:
+                        deck_name = ""
+
+                    if deck_name and deck_name.strip():
+                        base = sanitize_filename(deck_name)
+                    else:
+                        base = "combinado"
+                else:
+                    parts = [
+                        p
+                        for p in [
+                            "locales" if self.state.local_fronts else None,
+                            "One Piece" if op_fronts else None,
+                            "Riftbound" if rb_fronts else None,
+                            "Lorcana" if lorcana_fronts else None,
+                            "magic_url" if mtg_fronts else None,
+                        ]
+                        if p
                     ]
-                    if p
-                ]
-                base = "_".join(parts) if parts else "combinado"
+                    base = "_".join(parts) if parts else "combinado"
                 self.events.put(("file", 1, 1, base))
 
                 def cb(stage, done, total, _label=base):

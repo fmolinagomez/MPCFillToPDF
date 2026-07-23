@@ -25,7 +25,7 @@ from src.downloader import (
 )
 from src.parser import CardOrder, parse
 from src.pdf_generator import generate
-from src.scraper_utils import resources_dir
+from src.scraper_utils import resources_dir, sanitize_filename
 from src.scryfall import ScryfallError, download_deck_images
 
 CROP_THREADS = 5
@@ -693,6 +693,8 @@ def run_deck_url(
     scryfall_dir = work_dir / "scryfall"
 
     fetched = fetch_deck(url)
+    if fetched.name and fetched.name.strip():
+        base_name = sanitize_filename(fetched.name)
 
     cards = [
         c for c in fetched.cards if c.zone == "main" or (include_sideboard and c.zone == "side")

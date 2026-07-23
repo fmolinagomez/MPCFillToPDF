@@ -1,3 +1,26 @@
+[project]
+name = "mpcfill-topdf"
+version = "0.1.0"
+description = "Automated pipeline that converts an MPCFill XML project file into a print-ready PDF"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow>=10.0,<12",
+    "reportlab>=4.0,<5",
+    "gdown>=5.0,<6",
+    "requests>=2.28,<3",
+    "plyer>=2.0,<3",
+    "windnd>=1.0,<2; sys_platform == 'win32'",
+]
+
+[project.scripts]
+mpcfill-gui = "gui.main:main"
+mpcfill-cli = "cli.main:main"
+
+[tool.setuptools]
+packages = ["gui", "src", "cli"]
+
+
 [tool.ruff]
 target-version = "py310"
 line-length = 100
@@ -19,3 +42,9 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.18",
+]
+

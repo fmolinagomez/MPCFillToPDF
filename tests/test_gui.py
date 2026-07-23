@@ -554,6 +554,51 @@ class TestSeparatorBackResolution:
         # The separator's back must be the default MTG back, NOT back_jace!
         assert extra_backs[0] == mtg_default_back
 
+    def test_base_name_uses_sanitized_deck_name_when_single_deck(self, app, tmp_path):
+        from unittest.mock import patch
+        from gui.main import MtgUrlDeck
+        from src.deck_importer import DeckCard
+
+        commander = DeckCard("Jace", "m21", "1", 1, "main", is_commander=True)
+        deck = MtgUrlDeck(
+            url="https://moxfield.com/decks/abc",
+            name="My Extremely Long Moxfield Deck: <Nice>",
+            cards=[commander],
+            include_separator=False,
+            back_path=None,
+            format="commander"
+        )
+        
+        app.state.mtg_url_decks = [deck]
+        
+        front_jace = tmp_path / "jace_front.jpg"
+        front_jace.touch()
+        back_jace = tmp_path / "jace_back.jpg"
+        back_jace.touch()
+        
+        dl_results = [(commander, front_jace, back_jace)]
+        
+        captured_base_name = []
+        def mock_run_locals_only(*args, **kwargs):
+            captured_base_name.append(args[3])
+            return [Path("output.pdf")]
+
+        with (
+            patch("gui.main.work_dir", return_value=tmp_path),
+            patch("gui.main.scryfall_download", return_value=dl_results),
+            patch("gui.main.run_locals_only", side_effect=mock_run_locals_only),
+            patch("gui.main.resources_dir", return_value=tmp_path)
+        ):
+            mtg_default_back = tmp_path / "backs" / "mtg" / "back.jpg"
+            mtg_default_back.parent.mkdir(parents=True, exist_ok=True)
+            mtg_default_back.touch()
+            
+            app._work(None, None, False, "#000000", "ticks", 0.5, False, False, False)
+            
+        assert len(captured_base_name) == 1
+        assert captured_base_name[0] == "My Extremely Long Moxfield Deck_ _Nice_"
+
+
 
 
 
