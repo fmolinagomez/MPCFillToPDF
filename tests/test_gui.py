@@ -316,6 +316,23 @@ class TestMtgUrlDeckActiveCount:
         deck.include_tokens = False
         assert deck.active_count == 4
 
+    def test_active_count_deduplicates_tokens(self):
+        from gui.main import MtgUrlDeck
+        from src.deck_importer import DeckCard
+        
+        cards = [
+            # Two copies of the exact same token version
+            DeckCard("Zombie Token", "unf", "1", 2, "token", layout="token"),
+            DeckCard("Zombie Token", "unf", "1", 1, "token", layout="token"),
+            # Different art version of the same token name (should count separately)
+            DeckCard("Zombie Token", "m21", "2", 1, "token", layout="token"),
+            # Main card
+            DeckCard("Main Card", "m21", "1", 4, "main"),
+        ]
+        deck = MtgUrlDeck(url="https://moxfield.com/decks/abc", cards=cards, include_tokens=True)
+        # Main cards (4) + Unique Zombie unf/1 (1) + Unique Zombie m21/2 (1) = 6
+        assert deck.active_count == 6
+
 
 class TestGuiHandleDoneWithWarnings:
     def test_done_event_updates_status_var_with_skipped_tokens(self, app):

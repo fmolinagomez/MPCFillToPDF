@@ -19,6 +19,7 @@ from src.app_settings import (
     DEFAULT_SCRYFALL_DECK_SEPARATORS,
     DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD,
     DEFAULT_SCRYFALL_DOWNLOAD_TOKENS,
+    DEFAULT_SCRYFALL_MINIMIZE_TOKENS,
     DEFAULT_SCRYFALL_FAIL_POLICY,
     DEFAULT_SCRYFALL_LANG,
     DEFAULT_SCRYFALL_QUALITY,
@@ -281,6 +282,18 @@ class SettingsTabMixin:
         )
         self._sf_deck_separators_cb.pack(anchor=tk.W)
 
+        # Minimizar fichas
+        min_tok_row = ttk.Frame(sf_frame)
+        min_tok_row.pack(fill=tk.X, pady=4)
+        self._settings_sf_minimize_tokens_var = tk.BooleanVar(value=self._settings.scryfall_minimize_tokens)
+        self._sf_minimize_tokens_cb = ttk.Checkbutton(
+            min_tok_row,
+            text="Minimizar fichas (unificar entre mazos)",
+            variable=self._settings_sf_minimize_tokens_var,
+            command=self._on_sf_minimize_tokens_changed,
+        )
+        self._sf_minimize_tokens_cb.pack(anchor=tk.W)
+
         ttk.Separator(outer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(8, 12))
 
         # ── Botón de restablecer ─────────────────────────────────────────────
@@ -409,6 +422,10 @@ class SettingsTabMixin:
         self._settings.scryfall_deck_separators = self._settings_sf_deck_separators_var.get()
         self._persist_settings()
 
+    def _on_sf_minimize_tokens_changed(self) -> None:
+        self._settings.scryfall_minimize_tokens = self._settings_sf_minimize_tokens_var.get()
+        self._persist_settings()
+
     def _on_sf_blur_threshold_trace(self, *_) -> None:
         try:
             val = float(self._settings_sf_blur_threshold_var.get().replace(",", "."))
@@ -436,6 +453,7 @@ class SettingsTabMixin:
         self._settings.scryfall_download_sideboard = DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD
         self._settings.scryfall_download_tokens = DEFAULT_SCRYFALL_DOWNLOAD_TOKENS
         self._settings.scryfall_deck_separators = DEFAULT_SCRYFALL_DECK_SEPARATORS
+        self._settings.scryfall_minimize_tokens = DEFAULT_SCRYFALL_MINIMIZE_TOKENS
 
         self._custom_output_dir = None
         self.out_dir_var.set(str(output_dir()))
@@ -457,6 +475,7 @@ class SettingsTabMixin:
         self._settings_sf_blur_threshold_var.set(f"{DEFAULT_SCRYFALL_BLUR_THRESHOLD}")
         self._settings_sf_bc_check_var.set(DEFAULT_SCRYFALL_BC_CHECK)
         self._settings_sf_deck_separators_var.set(DEFAULT_SCRYFALL_DECK_SEPARATORS)
+        self._settings_sf_minimize_tokens_var.set(DEFAULT_SCRYFALL_MINIMIZE_TOKENS)
         self._update_sf_quality_check_state()
 
         self._persist_settings()

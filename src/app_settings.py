@@ -21,6 +21,7 @@ DEFAULT_SCRYFALL_BC_CHECK = True
 DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD = False
 DEFAULT_SCRYFALL_DOWNLOAD_TOKENS = False
 DEFAULT_SCRYFALL_DECK_SEPARATORS = False
+DEFAULT_SCRYFALL_MINIMIZE_TOKENS = False
 
 
 @dataclass
@@ -41,6 +42,7 @@ class AppSettings:
     scryfall_download_sideboard: bool = DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD
     scryfall_download_tokens: bool = DEFAULT_SCRYFALL_DOWNLOAD_TOKENS
     scryfall_deck_separators: bool = DEFAULT_SCRYFALL_DECK_SEPARATORS
+    scryfall_minimize_tokens: bool = DEFAULT_SCRYFALL_MINIMIZE_TOKENS
 
 
 
@@ -99,6 +101,7 @@ def load_settings(base_dir: Path) -> AppSettings:
         sf_download_sideboard = bool(data.get("scryfall_download_sideboard", DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD))
         sf_download_tokens = bool(data.get("scryfall_download_tokens", DEFAULT_SCRYFALL_DOWNLOAD_TOKENS))
         sf_deck_separators = bool(data.get("scryfall_deck_separators", DEFAULT_SCRYFALL_DECK_SEPARATORS))
+        sf_minimize_tokens = bool(data.get("scryfall_minimize_tokens", DEFAULT_SCRYFALL_MINIMIZE_TOKENS))
 
         return AppSettings(
             output_dir=output_dir,
@@ -117,6 +120,7 @@ def load_settings(base_dir: Path) -> AppSettings:
             scryfall_download_sideboard=sf_download_sideboard,
             scryfall_download_tokens=sf_download_tokens,
             scryfall_deck_separators=sf_deck_separators,
+            scryfall_minimize_tokens=sf_minimize_tokens,
         )
     except Exception as exc:
         _log.warning("Could not load settings.json: %s", exc)
@@ -145,6 +149,7 @@ def save_settings(settings: AppSettings, base_dir: Path) -> None:
             "scryfall_download_sideboard": settings.scryfall_download_sideboard,
             "scryfall_download_tokens": settings.scryfall_download_tokens,
             "scryfall_deck_separators": settings.scryfall_deck_separators,
+            "scryfall_minimize_tokens": settings.scryfall_minimize_tokens,
         }
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")

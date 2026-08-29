@@ -98,13 +98,22 @@ class MtgUrlDeck:
 
     @property
     def active_count(self) -> int:
-        base = sum(
+        main_side_count = sum(
             c.quantity
             for c in self.cards
             if c.zone == "main"
             or (c.zone == "side" and self.include_side)
-            or (c.zone == "token" and self.include_tokens and c.layout in ("token", "emblem", "double_faced_token"))
         )
+        token_count = 0
+        if self.include_tokens:
+            seen_tokens = set()
+            for c in self.cards:
+                if c.zone == "token" and c.layout in ("token", "emblem", "double_faced_token"):
+                    key = ((c.set_code or "").lower(), c.collector_number or "")
+                    if key not in seen_tokens:
+                        seen_tokens.add(key)
+                        token_count += 1
+        base = main_side_count + token_count
         if self.include_separator:
             base += 1
         return base
@@ -1009,7 +1018,23 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                                 commander_card = c
                                 break
                     
-                    active_cards = [c for c in deck_cards if c.quantity > 0]
+                    active_cards = []
+                    seen_tokens = set()
+                    from copy import copy
+                    for c in deck_cards:
+                        if c.quantity <= 0:
+                            continue
+                        if c.zone == "token":
+                            key = ((c.set_code or "").lower(), c.collector_number or "")
+                            if key in seen_tokens:
+                                continue
+                            seen_tokens.add(key)
+                            c_copy = copy(c)
+                            c_copy.quantity = 1
+                            active_cards.append(c_copy)
+                        else:
+                            active_cards.append(c)
+                    
                     # Sort active cards by category (Main -> Tokens -> Sideboard) and then alphabetically by name
                     zone_order = {"main": 0, "token": 1, "side": 2}
                     active_cards.sort(key=lambda x: (zone_order.get(x.zone, 0), x.name.casefold()))
@@ -1063,6 +1088,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 local_back_set = set(self.state.local_backs)
                 all_mtg_back_paths: set[Path] = {mtg_default_back}
                 
+                printed_tokens_global = set()
                 for idx, item in enumerate(decks_with_cards):
                     _deck = item["deck"]
                     
@@ -1094,6 +1120,11 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                         if not front_path or not front_path.exists():
                             continue
                         
+                        if card.zone == "token" and self._settings.scryfall_minimize_tokens:
+                            if comp_key in printed_tokens_global:
+                                continue
+                            printed_tokens_global.add(comp_key)
+
                         if back_path is not None:
                             resolved_back = back_path
                         elif _deck.back_path in local_back_set:
@@ -1315,6 +1346,50 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                             if c.zone == "token"
                             and c.layout not in ("token", "emblem", "double_faced_token")
                         )
+
+            # Generate tokens.md if we have MTG URL decks with tokens
+            if self.state.mtg_url_decks:
+                has_any_tokens = False
+                for _deck in self.state.mtg_url_decks:
+                    if any(c.zone == "token" for c in _deck.cards):
+                        has_any_tokens = True
+                        break
+                
+                if has_any_tokens:
+                    md_path = run_dir / "tokens.md"
+                    md_lines = ["# Fichas Necesarias por Mazo", ""]
+                    for _deck in self.state.mtg_url_decks:
+                        md_lines.append(f"## Mazo: {_deck.display_name}")
+                        tokens = [c for c in _deck.cards if c.zone == "token"]
+                        if not tokens:
+                            md_lines.append("No se necesitan fichas.")
+                            md_lines.append("")
+                            continue
+                        
+                        # Group tokens of this deck by name, set, cn
+                        token_groups = {}
+                        for c in tokens:
+                            key = (c.name, (c.set_code or "").lower(), c.collector_number or "", c.layout)
+                            token_groups[key] = token_groups.get(key, 0) + c.quantity
+                        
+                        for (name, set_code, cn, layout), qty in sorted(token_groups.items(), key=lambda x: x[0][0].casefold()):
+                            is_valid = layout in ("token", "emblem", "double_faced_token")
+                            is_included = _deck.include_tokens and is_valid
+                            inc_str = "Incluida en el PDF" if is_included else "No incluida en el PDF"
+                            details = []
+                            if set_code:
+                                details.append(set_code.upper())
+                            if cn:
+                                details.append(cn)
+                            details_str = f" ({' '.join(details)})" if details else ""
+                            md_lines.append(f"- {qty}x {name}{details_str} — *{inc_str}*")
+                        md_lines.append("")
+                    
+                    try:
+                        md_path.write_text("\n".join(md_lines), encoding="utf-8")
+                        _log.info("Archivo tokens.md generado en: %s", md_path)
+                    except Exception as e:
+                        _log.error("No se pudo escribir tokens.md: %s", e)
 
             self.events.put(("done", generated, manifest, run_dir, timing_str, skipped_tokens_count))
         except DownloadPartialError as e:

@@ -217,6 +217,14 @@ class TestLoadSettings:
     def test_scryfall_deck_separators_default_is_false(self, tmp_path):
         assert load_settings(tmp_path).scryfall_deck_separators is False
 
+    def test_scryfall_minimize_tokens_roundtrip(self, tmp_path):
+        s = AppSettings(scryfall_minimize_tokens=True)
+        save_settings(s, tmp_path)
+        assert load_settings(tmp_path).scryfall_minimize_tokens is True
+
+    def test_scryfall_minimize_tokens_default_is_false(self, tmp_path):
+        assert load_settings(tmp_path).scryfall_minimize_tokens is False
+
 
 
 class TestSaveSettings:
