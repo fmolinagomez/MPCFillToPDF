@@ -11,16 +11,17 @@ _log = logging.getLogger(__name__)
 CARD_W_IN = 2.5
 BLEED_X_FRAC = 0.042
 
+
 def check_image_quality(
     image_path: Path,
     blur_threshold: float,
     check_brightness_contrast: bool = True,
 ) -> tuple[bool, float, tuple[int, int]]:
     """Evaluate image using standardized quality criteria.
-    
+
     Checks integrity (PIL), aspect ratio, resolution (DPI >= 200),
     brightness (>= 50), contrast (>= 30), and sharpness (Laplacian variance >= threshold).
-    
+
     Returns (is_ok, focus_score, (width, height)).
     """
     # 1. Integrity check using PIL
@@ -42,7 +43,13 @@ def check_image_quality(
     w_cropped = w * (1.0 - 2.0 * BLEED_X_FRAC)
     dpi_cropped = round(w_cropped / CARD_W_IN)
     if dpi_cropped < 200:
-        _log.warning("Resolución insuficiente en control de calidad %s: %dx%d (%d DPI)", image_path.name, w, h, dpi_cropped)
+        _log.warning(
+            "Resolución insuficiente en control de calidad %s: %dx%d (%d DPI)",
+            image_path.name,
+            w,
+            h,
+            dpi_cropped,
+        )
         return False, 0.0, (w, h)
 
     # 4. Decoded image checks (OpenCV)
@@ -56,20 +63,33 @@ def check_image_quality(
     # Sharpness (Laplacian variance)
     focus_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     if focus_score < blur_threshold:
-        _log.warning("Imagen borrosa en control de calidad %s: %.1f < %.1f", image_path.name, focus_score, blur_threshold)
+        _log.warning(
+            "Imagen borrosa en control de calidad %s: %.1f < %.1f",
+            image_path.name,
+            focus_score,
+            blur_threshold,
+        )
         return False, focus_score, (w, h)
 
     if check_brightness_contrast:
         # Brightness
         mean_val = np.mean(gray)
         if mean_val < 50:
-            _log.warning("Imagen demasiado oscura en control de calidad %s: %.1f < 50", image_path.name, mean_val)
+            _log.warning(
+                "Imagen demasiado oscura en control de calidad %s: %.1f < 50",
+                image_path.name,
+                mean_val,
+            )
             return False, focus_score, (w, h)
 
         # Contrast
         std_val = np.std(gray)
         if std_val < 30:
-            _log.warning("Contraste insuficiente en control de calidad %s: %.1f < 30", image_path.name, std_val)
+            _log.warning(
+                "Contraste insuficiente en control de calidad %s: %.1f < 30",
+                image_path.name,
+                std_val,
+            )
             return False, focus_score, (w, h)
 
     return True, focus_score, (w, h)
@@ -77,7 +97,7 @@ def check_image_quality(
 
 def analyze_single_image(file_path: Path, check_brightness_contrast: bool = True) -> dict:
     """Analyze a single image and calculate detailed quality metrics.
-    
+
     Returns a dictionary of formatted results matching the requirements of image_quality_analyzer.py.
     """
     res = {
@@ -108,7 +128,7 @@ def analyze_single_image(file_path: Path, check_brightness_contrast: bool = True
         res["resolution"] = f"{w}x{h}"
         w_cropped = w * (1.0 - 2.0 * BLEED_X_FRAC)
         dpi_cropped = round(w_cropped / CARD_W_IN)
-        
+
         if dpi_cropped >= 300:
             dpi_label = "Alta"
         elif dpi_cropped >= 200:
@@ -116,7 +136,7 @@ def analyze_single_image(file_path: Path, check_brightness_contrast: bool = True
         else:
             dpi_label = "Baja"
             res["is_ok"] = False
-            
+
         res["dpi_est"] = f"{dpi_cropped} ({dpi_label})"
 
         # 3. Proporción

@@ -102,6 +102,7 @@ class TestAnalyzerMoxfield:
     def test_moxfield_import_error(self, mock_fetch, app):
         """Verify the background thread and queue messaging handles errors correctly."""
         from src.deck_importer import DeckImportError
+
         mock_fetch.side_effect = DeckImportError("Moxfield API Error")
 
         # Run import worker

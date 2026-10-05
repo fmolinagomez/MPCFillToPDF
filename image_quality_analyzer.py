@@ -22,9 +22,9 @@ if str(SCRIPT_DIR) not in sys.path:
 
 # Intentar importar librerías críticas para el análisis y dependencias del importador
 try:
-    import cv2
-    import numpy as np
-    from PIL import Image
+    import cv2  # noqa: F401
+    import numpy as np  # noqa: F401
+    from PIL import Image  # noqa: F401
 
     from src.deck_importer import DeckImportError, fetch_deck
     from src.quality import analyze_single_image
@@ -35,7 +35,7 @@ except ImportError as e:
     messagebox.showerror(
         "Faltan Dependencias",
         f"No se pudieron importar las dependencias necesarias. Por favor ejecuta:\n"
-        f"uv pip install pillow opencv-python numpy requests\n\nDetalle: {e}"
+        f"uv pip install pillow opencv-python numpy requests\n\nDetalle: {e}",
     )
     sys.exit(1)
 
@@ -51,28 +51,36 @@ BLEED_X_FRAC = 0.042
 BLEED_Y_FRAC = 0.031
 
 # Colores del tema macOS Light
-BG_DARK = "#eceef0"          # Fondo de la ventana principal (gris mac claro)
-BG_PANEL = "#ffffff"         # Fondo de paneles y tarjetas (blanco)
-BG_HIGHLIGHT = "#e5e5ea"     # Fondo de elementos destacados o bordes (gris suave)
-TEXT_DARK = "#1d1d1f"        # Texto principal (negro mac, casi negro)
-TEXT_MUTED = "#86868b"       # Texto secundario/desactivado (gris mac)
-TEXT_WHITE = "#ffffff"       # Texto blanco puro para botones primarios
-COLOR_PRIMARY = "#007aff"     # Accent color de macOS (azul sistema)
-COLOR_PRIMARY_HOVER = "#0062cc" # Accent color hover
-COLOR_SUCCESS = "#34c759"     # Éxito (verde macOS)
+BG_DARK = "#eceef0"  # Fondo de la ventana principal (gris mac claro)
+BG_PANEL = "#ffffff"  # Fondo de paneles y tarjetas (blanco)
+BG_HIGHLIGHT = "#e5e5ea"  # Fondo de elementos destacados o bordes (gris suave)
+TEXT_DARK = "#1d1d1f"  # Texto principal (negro mac, casi negro)
+TEXT_MUTED = "#86868b"  # Texto secundario/desactivado (gris mac)
+TEXT_WHITE = "#ffffff"  # Texto blanco puro para botones primarios
+COLOR_PRIMARY = "#007aff"  # Accent color de macOS (azul sistema)
+COLOR_PRIMARY_HOVER = "#0062cc"  # Accent color hover
+COLOR_SUCCESS = "#34c759"  # Éxito (verde macOS)
 COLOR_SUCCESS_HOVER = "#28a745"
-COLOR_WARNING = "#ff9500"     # Advertencia (naranja macOS)
-COLOR_DANGER = "#ff3b30"      # Peligro/Error (rojo macOS)
+COLOR_WARNING = "#ff9500"  # Advertencia (naranja macOS)
+COLOR_DANGER = "#ff3b30"  # Peligro/Error (rojo macOS)
 COLOR_DANGER_HOVER = "#e02d24"
 
 # Fuentes del sistema para un aspecto nativo de macOS / Windows / Linux
-FONT_FAMILY = ".AppleSystemUIFont" if sys.platform.startswith("darwin") else "Segoe UI" if os.name == "nt" else "Arial"
-FONT_MONO = "Menlo" if sys.platform.startswith("darwin") else "Consolas" if os.name == "nt" else "monospace"
-
+FONT_FAMILY = (
+    ".AppleSystemUIFont"
+    if sys.platform.startswith("darwin")
+    else "Segoe UI"
+    if os.name == "nt"
+    else "Arial"
+)
+FONT_MONO = (
+    "Menlo" if sys.platform.startswith("darwin") else "Consolas" if os.name == "nt" else "monospace"
+)
 
 
 class HoverButton(tk.Button):
     """Un botón plano con efectos de hover para una estética moderna."""
+
     def __init__(self, master, bg_color, fg_color, hover_bg, hover_fg, **kw):
         super().__init__(
             master,
@@ -87,7 +95,7 @@ class HoverButton(tk.Button):
             padx=12,
             pady=6,
             cursor="hand2",
-            **kw
+            **kw,
         )
         self.bg_color = bg_color
         self.fg_color = fg_color
@@ -103,9 +111,6 @@ class HoverButton(tk.Button):
         self.config(bg=self.bg_color, fg=self.fg_color, highlightbackground=self.bg_color)
 
 
-
-
-
 class AnalyzerApp:
     def __init__(self, root):
         self.root = root
@@ -115,13 +120,13 @@ class AnalyzerApp:
 
         # Habilitar soporte de alta densidad (DPI)
         try:
-            self.root.tk.call('tk', 'scaling', 1.5)
+            self.root.tk.call("tk", "scaling", 1.5)
         except Exception:
             pass
 
         # Rutas cargadas pendientes de procesar
         self.pending_files = []
-        
+
         # Cola de comunicación entre hilos
         self.queue = queue.Queue()
         self.is_processing = False
@@ -134,24 +139,19 @@ class AnalyzerApp:
         style.theme_use("clam")
 
         # Configurar colores del Notebook
-        style.configure(
-            "TNotebook",
-            background=BG_DARK,
-            borderwidth=0,
-            highlightthickness=0
-        )
+        style.configure("TNotebook", background=BG_DARK, borderwidth=0, highlightthickness=0)
         style.configure(
             "TNotebook.Tab",
             background=BG_HIGHLIGHT,
             foreground=TEXT_MUTED,
             font=(FONT_FAMILY, 10, "bold"),
             padding=[15, 6],
-            relief="flat"
+            relief="flat",
         )
         style.map(
             "TNotebook.Tab",
             background=[("selected", BG_PANEL)],
-            foreground=[("selected", TEXT_DARK)]
+            foreground=[("selected", TEXT_DARK)],
         )
 
         # Configurar estilo de Treeview
@@ -162,31 +162,25 @@ class AnalyzerApp:
             fieldbackground=BG_PANEL,
             rowheight=28,
             font=(FONT_FAMILY, 9),
-            borderwidth=0
+            borderwidth=0,
         )
         style.configure(
             "Treeview.Heading",
             background=BG_DARK,
             foreground=TEXT_MUTED,
             font=(FONT_FAMILY, 9, "bold"),
-            relief="flat"
+            relief="flat",
         )
         style.map(
             "Treeview",
             background=[("selected", COLOR_PRIMARY)],
-            foreground=[("selected", TEXT_WHITE)]
+            foreground=[("selected", TEXT_WHITE)],
         )
-        style.map(
-            "Treeview.Heading",
-            background=[("active", BG_HIGHLIGHT)]
-        )
+        style.map("Treeview.Heading", background=[("active", BG_HIGHLIGHT)])
 
         # Barra de progreso
         style.configure(
-            "TProgressbar",
-            troughcolor=BG_HIGHLIGHT,
-            background=COLOR_PRIMARY,
-            thickness=14
+            "TProgressbar", troughcolor=BG_HIGHLIGHT, background=COLOR_PRIMARY, thickness=14
         )
 
         # Scrollbars
@@ -196,7 +190,7 @@ class AnalyzerApp:
             background=BG_HIGHLIGHT,
             troughcolor=BG_DARK,
             bordercolor=BG_DARK,
-            arrowcolor=TEXT_DARK
+            arrowcolor=TEXT_DARK,
         )
         style.configure(
             "Horizontal.TScrollbar",
@@ -204,7 +198,7 @@ class AnalyzerApp:
             background=BG_HIGHLIGHT,
             troughcolor=BG_DARK,
             bordercolor=BG_DARK,
-            arrowcolor=TEXT_DARK
+            arrowcolor=TEXT_DARK,
         )
 
     def _build_ui(self):
@@ -221,7 +215,7 @@ class AnalyzerApp:
             text="Analizador de Calidad de Imágenes",
             font=(FONT_FAMILY, 16, "bold"),
             bg=BG_DARK,
-            fg=TEXT_DARK
+            fg=TEXT_DARK,
         )
         title_label.pack(side="left")
 
@@ -230,7 +224,7 @@ class AnalyzerApp:
             text="Métricas: Resolución, DPI, Nitidez, Brillo, Contraste y Aspecto",
             font=(FONT_FAMILY, 9, "italic"),
             bg=BG_DARK,
-            fg=TEXT_MUTED
+            fg=TEXT_MUTED,
         )
         subtitle_label.pack(side="left", padx=15, pady=(5, 0))
 
@@ -258,15 +252,12 @@ class AnalyzerApp:
             text="Listo para añadir imágenes.",
             font=(FONT_FAMILY, 9),
             bg=BG_DARK,
-            fg=TEXT_MUTED
+            fg=TEXT_MUTED,
         )
         self.status_label.pack(side="left")
 
         self.progress = ttk.Progressbar(
-            self.status_frame,
-            orient="horizontal",
-            mode="determinate",
-            style="TProgressbar"
+            self.status_frame, orient="horizontal", mode="determinate", style="TProgressbar"
         )
         self.progress.pack(side="right", fill="x", expand=True, padx=(20, 0))
 
@@ -285,7 +276,7 @@ class AnalyzerApp:
             text="ACCIONES",
             font=(FONT_FAMILY, 10, "bold"),
             bg=BG_PANEL,
-            fg=TEXT_DARK
+            fg=TEXT_DARK,
         )
         actions_label.pack(anchor="w", pady=(0, 15))
 
@@ -299,7 +290,7 @@ class AnalyzerApp:
             text="Añadir Imágenes...",
             font=(FONT_FAMILY, 10, "bold"),
             width=18,
-            command=self._add_files
+            command=self._add_files,
         )
         self.btn_add_files.pack(pady=5)
 
@@ -312,7 +303,7 @@ class AnalyzerApp:
             text="Añadir Carpeta...",
             font=(FONT_FAMILY, 10, "bold"),
             width=18,
-            command=self._add_directory
+            command=self._add_directory,
         )
         self.btn_add_dir.pack(pady=5)
 
@@ -325,7 +316,7 @@ class AnalyzerApp:
             text="Añadir desde Moxfield...",
             font=(FONT_FAMILY, 10, "bold"),
             width=18,
-            command=self._add_moxfield_deck
+            command=self._add_moxfield_deck,
         )
         self.btn_add_moxfield.pack(pady=5)
 
@@ -338,7 +329,7 @@ class AnalyzerApp:
             text="Limpiar Lista",
             font=(FONT_FAMILY, 10),
             width=18,
-            command=self._clear_pending_list
+            command=self._clear_pending_list,
         )
         self.btn_clear_list.pack(pady=(5, 30))
 
@@ -352,7 +343,7 @@ class AnalyzerApp:
             text="Analizar Imágenes",
             font=(FONT_FAMILY, 11, "bold"),
             width=18,
-            command=self._start_analysis
+            command=self._start_analysis,
         )
         self.btn_analyze.pack(side="bottom", pady=5)
 
@@ -368,7 +359,7 @@ class AnalyzerApp:
             text="IMÁGENES A ANALIZAR:",
             font=(FONT_FAMILY, 10, "bold"),
             bg=BG_DARK,
-            fg=TEXT_DARK
+            fg=TEXT_DARK,
         )
         list_label.pack(side="left", pady=(0, 5))
 
@@ -377,7 +368,7 @@ class AnalyzerApp:
             text="(Doble clic en un archivo para quitarlo de la lista)",
             font=(FONT_FAMILY, 8, "italic"),
             bg=BG_DARK,
-            fg=TEXT_MUTED
+            fg=TEXT_MUTED,
         )
         help_label.pack(side="right", pady=(0, 5))
 
@@ -392,12 +383,14 @@ class AnalyzerApp:
             highlightthickness=1,
             highlightbackground=BG_HIGHLIGHT,
             highlightcolor=COLOR_PRIMARY,
-            font=(FONT_MONO, 10)
+            font=(FONT_MONO, 10),
         )
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<Double-Button-1>", self._remove_selected_from_listbox)
 
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.listbox.yview, style="Vertical.TScrollbar")
+        scrollbar = ttk.Scrollbar(
+            list_frame, orient="vertical", command=self.listbox.yview, style="Vertical.TScrollbar"
+        )
         scrollbar.pack(side="right", fill="y")
         self.listbox.config(yscrollcommand=scrollbar.set)
 
@@ -418,7 +411,7 @@ class AnalyzerApp:
             hover_fg=TEXT_WHITE,
             text="Limpiar Resultados",
             font=(FONT_FAMILY, 9, "bold"),
-            command=self._clear_treeview
+            command=self._clear_treeview,
         )
         btn_clear_results.pack(side="left", padx=5)
 
@@ -430,7 +423,7 @@ class AnalyzerApp:
             hover_fg=TEXT_DARK,
             text="Exportar Resultados (JSON)...",
             font=(FONT_FAMILY, 9),
-            command=self._export_results
+            command=self._export_results,
         )
         btn_export.pack(side="left", padx=5)
 
@@ -439,7 +432,7 @@ class AnalyzerApp:
             text="(Doble clic en una fila para abrir la imagen)",
             font=(FONT_FAMILY, 8, "italic"),
             bg=BG_DARK,
-            fg=TEXT_MUTED
+            fg=TEXT_MUTED,
         )
         help_click_label.pack(side="right", padx=5)
 
@@ -449,13 +442,17 @@ class AnalyzerApp:
 
         # Definición de la Tabla (Treeview)
         columns = (
-            "file", "resolution", "dpi", "sharpness", "brightness", "contrast", "aspect", "integrity"
+            "file",
+            "resolution",
+            "dpi",
+            "sharpness",
+            "brightness",
+            "contrast",
+            "aspect",
+            "integrity",
         )
         self.tree = ttk.Treeview(
-            table_container,
-            columns=columns,
-            show="headings",
-            style="Treeview"
+            table_container, columns=columns, show="headings", style="Treeview"
         )
 
         # Configurar encabezados y anchos de columnas
@@ -475,8 +472,15 @@ class AnalyzerApp:
             self.tree.column(col, width=width, anchor="w")
 
         # Scrollbars para la tabla
-        vsb = ttk.Scrollbar(table_container, orient="vertical", command=self.tree.yview, style="Vertical.TScrollbar")
-        hsb = ttk.Scrollbar(table_container, orient="horizontal", command=self.tree.xview, style="Horizontal.TScrollbar")
+        vsb = ttk.Scrollbar(
+            table_container, orient="vertical", command=self.tree.yview, style="Vertical.TScrollbar"
+        )
+        hsb = ttk.Scrollbar(
+            table_container,
+            orient="horizontal",
+            command=self.tree.xview,
+            style="Horizontal.TScrollbar",
+        )
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
         # Grid layout para colocar scrollbars correctamente
@@ -495,12 +499,9 @@ class AnalyzerApp:
     def _add_files(self):
         filetypes = [
             ("Imágenes", "*.jpg *.jpeg *.png *.webp *.bmp *.tiff"),
-            ("Todos los archivos", "*.*")
+            ("Todos los archivos", "*.*"),
         ]
-        paths = filedialog.askopenfilenames(
-            title="Seleccionar imágenes",
-            filetypes=filetypes
-        )
+        paths = filedialog.askopenfilenames(title="Seleccionar imágenes", filetypes=filetypes)
         if not paths:
             return
 
@@ -521,7 +522,7 @@ class AnalyzerApp:
 
         directory = Path(dir_path)
         supported_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
-        
+
         added_count = 0
         for entry in directory.iterdir():
             if entry.is_file() and entry.suffix.lower() in supported_exts:
@@ -530,7 +531,9 @@ class AnalyzerApp:
                     self.listbox.insert("end", str(entry))
                     added_count += 1
 
-        self._update_status(f"Se añadieron {added_count} archivo(s) de la carpeta '{directory.name}'.")
+        self._update_status(
+            f"Se añadieron {added_count} archivo(s) de la carpeta '{directory.name}'."
+        )
 
     def _clear_pending_list(self):
         self.pending_files.clear()
@@ -544,7 +547,7 @@ class AnalyzerApp:
         idx = selection[0]
         val = self.listbox.get(idx)
         self.listbox.delete(idx)
-        
+
         # Remover de la lista interna
         try:
             path_to_remove = Path(val)
@@ -560,7 +563,9 @@ class AnalyzerApp:
         items = self.tree.get_children()
         if not items:
             return
-        if messagebox.askyesno("Confirmar Limpieza", "¿Seguro que deseas limpiar todos los resultados de la tabla?"):
+        if messagebox.askyesno(
+            "Confirmar Limpieza", "¿Seguro que deseas limpiar todos los resultados de la tabla?"
+        ):
             for item in items:
                 self.tree.delete(item)
             self._update_status("Resultados de la tabla borrados.")
@@ -575,7 +580,7 @@ class AnalyzerApp:
         # El ID/filepath se guarda de forma oculta en la configuración o podemos buscar el archivo.
         # Vamos a almacenar la ruta absoluta de la imagen como el ID de la fila.
         filepath = item_id  # En nuestro Treeview, el item iid será la ruta del archivo.
-        
+
         if os.path.exists(filepath):
             try:
                 # Abrir archivo con visor del sistema
@@ -599,31 +604,36 @@ class AnalyzerApp:
         export_path = filedialog.asksaveasfilename(
             title="Exportar Resultados",
             defaultextension=".json",
-            filetypes=[("Archivos JSON", "*.json")]
+            filetypes=[("Archivos JSON", "*.json")],
         )
         if not export_path:
             return
 
         import json
+
         results_data = []
         for item_id in items:
             vals = self.tree.item(item_id, "values")
-            results_data.append({
-                "ruta_absoluta": item_id,
-                "archivo": vals[0],
-                "resolucion": vals[1],
-                "dpi_estimado": vals[2],
-                "nitidez": vals[3],
-                "brillo": vals[4],
-                "contraste": vals[5],
-                "proporcion": vals[6],
-                "integridad": vals[7]
-            })
+            results_data.append(
+                {
+                    "ruta_absoluta": item_id,
+                    "archivo": vals[0],
+                    "resolucion": vals[1],
+                    "dpi_estimado": vals[2],
+                    "nitidez": vals[3],
+                    "brillo": vals[4],
+                    "contraste": vals[5],
+                    "proporcion": vals[6],
+                    "integridad": vals[7],
+                }
+            )
 
         try:
             with open(export_path, "w", encoding="utf-8") as f:
                 json.dump(results_data, f, indent=4, ensure_ascii=False)
-            messagebox.showinfo("Exportación exitosa", f"Resultados exportados correctamente a:\n{export_path}")
+            messagebox.showinfo(
+                "Exportación exitosa", f"Resultados exportados correctamente a:\n{export_path}"
+            )
         except Exception as e:
             messagebox.showerror("Error de exportación", f"No se pudo guardar el archivo:\n{e}")
 
@@ -634,7 +644,9 @@ class AnalyzerApp:
             return
 
         if not self.pending_files:
-            messagebox.showwarning("Lista Vacía", "Por favor añade al menos una imagen para analizar.")
+            messagebox.showwarning(
+                "Lista Vacía", "Por favor añade al menos una imagen para analizar."
+            )
             return
 
         self.is_processing = True
@@ -647,7 +659,9 @@ class AnalyzerApp:
         self._update_status(f"Iniciando análisis de {total_files} imagen(es)...")
 
         # Iniciar hilo de trabajo
-        worker = threading.Thread(target=self._analysis_worker, args=(list(self.pending_files),), daemon=True)
+        worker = threading.Thread(
+            target=self._analysis_worker, args=(list(self.pending_files),), daemon=True
+        )
         worker.start()
 
         # Iniciar chequeo periódico de la cola en el hilo principal de la GUI
@@ -657,14 +671,11 @@ class AnalyzerApp:
         for idx, file_path in enumerate(files_list):
             # Realizar el análisis intensivo
             metrics = analyze_single_image(file_path)
-            
+
             # Enviar resultado y progreso a la cola
-            self.queue.put({
-                "type": "result",
-                "data": metrics,
-                "index": idx + 1,
-                "total": len(files_list)
-            })
+            self.queue.put(
+                {"type": "result", "data": metrics, "index": idx + 1, "total": len(files_list)}
+            )
             time.sleep(0.01)  # Pequeña pausa para asegurar fluidez
 
         # Indicar que terminó todo
@@ -677,7 +688,7 @@ class AnalyzerApp:
                 if msg["type"] == "result":
                     data = msg["data"]
                     filepath = data["filepath"]
-                    
+
                     # Evitar duplicaciones en el Treeview eliminando el iid si ya existiera
                     if self.tree.exists(filepath):
                         self.tree.delete(filepath)
@@ -695,8 +706,8 @@ class AnalyzerApp:
                             data["brightness"],
                             data["contrast"],
                             data["aspect"],
-                            data["integrity"]
-                        )
+                            data["integrity"],
+                        ),
                     )
 
                     # Aplicar tags visuales de color a las filas según si pasaron el control de calidad
@@ -706,28 +717,32 @@ class AnalyzerApp:
                         self.tree.item(filepath, tags=("ok",))
 
                     # Configurar colores de los tags
-                    self.tree.tag_configure("problematic", foreground=COLOR_DANGER)  # Rojo macOS para destacar advertencias
+                    self.tree.tag_configure(
+                        "problematic", foreground=COLOR_DANGER
+                    )  # Rojo macOS para destacar advertencias
                     self.tree.tag_configure("ok", foreground=TEXT_DARK)
 
                     # Actualizar barra de progreso y estado
                     self.progress["value"] = msg["index"]
-                    self._update_status(f"Procesado ({msg['index']}/{msg['total']}): {data['filename']}")
+                    self._update_status(
+                        f"Procesado ({msg['index']}/{msg['total']}): {data['filename']}"
+                    )
 
                 elif msg["type"] == "done":
                     self.is_processing = False
                     self._set_controls_state("normal")
-                    
+
                     # Vaciar la lista de imágenes pendientes analizadas
                     self._clear_pending_list()
-                    
+
                     self._update_status("Análisis completado con éxito.")
                     messagebox.showinfo(
                         "Análisis Terminado",
                         "El análisis de calidad ha finalizado. Revisa los resultados en la tabla.\n\n"
-                        "Puedes hacer doble clic sobre cualquier fila para visualizar la imagen original."
+                        "Puedes hacer doble clic sobre cualquier fila para visualizar la imagen original.",
                     )
                     return
-                
+
                 elif msg["type"] == "download_progress":
                     self.progress["maximum"] = msg["total"]
                     self.progress["value"] = msg["done"]
@@ -737,7 +752,7 @@ class AnalyzerApp:
                     self.is_processing = False
                     self._set_controls_state("normal")
                     self.progress["value"] = 0
-                    
+
                     # Añadir las imágenes descargadas a la lista
                     added_count = 0
                     for p in msg["files"]:
@@ -745,12 +760,14 @@ class AnalyzerApp:
                             self.pending_files.append(p)
                             self.listbox.insert("end", str(p))
                             added_count += 1
-                    
-                    self._update_status(f"Importación completada. Se añadieron {added_count} imágenes del mazo '{msg['deck_name']}'.")
+
+                    self._update_status(
+                        f"Importación completada. Se añadieron {added_count} imágenes del mazo '{msg['deck_name']}'."
+                    )
                     messagebox.showinfo(
                         "Importación Exitosa",
                         f"Se importó el mazo '{msg['deck_name']}' con éxito.\n"
-                        f"Se añadieron {added_count} imágenes nuevas a la lista para analizar."
+                        f"Se añadieron {added_count} imágenes nuevas a la lista para analizar.",
                     )
                     return
 
@@ -769,7 +786,13 @@ class AnalyzerApp:
                 self.root.after(100, self._check_queue)
 
     def _set_controls_state(self, state):
-        for btn in (self.btn_add_files, self.btn_add_dir, self.btn_add_moxfield, self.btn_clear_list, self.btn_analyze):
+        for btn in (
+            self.btn_add_files,
+            self.btn_add_dir,
+            self.btn_add_moxfield,
+            self.btn_clear_list,
+            self.btn_analyze,
+        ):
             if btn:
                 if state == "disabled":
                     btn.config(state="disabled", bg=BG_HIGHLIGHT, fg=TEXT_MUTED)
@@ -803,7 +826,7 @@ class AnalyzerApp:
             text="Importar mazo desde URL (Moxfield, Archidekt, etc.)",
             font=(FONT_FAMILY, 11, "bold"),
             bg=BG_DARK,
-            fg=TEXT_DARK
+            fg=TEXT_DARK,
         )
         lbl_title.pack(anchor="w", padx=15, pady=(15, 5))
 
@@ -812,7 +835,7 @@ class AnalyzerApp:
             text="Introduce la URL del mazo a analizar:",
             font=(FONT_FAMILY, 9),
             bg=BG_DARK,
-            fg=TEXT_MUTED
+            fg=TEXT_MUTED,
         )
         lbl_desc.pack(anchor="w", padx=15, pady=(0, 10))
 
@@ -830,7 +853,7 @@ class AnalyzerApp:
             font=(FONT_MONO, 10),
             highlightthickness=1,
             highlightbackground=BG_HIGHLIGHT,
-            highlightcolor=COLOR_PRIMARY
+            highlightcolor=COLOR_PRIMARY,
         )
         url_entry.pack(fill="x", ipady=4)
         url_entry.focus_set()
@@ -857,7 +880,7 @@ class AnalyzerApp:
             hover_fg=TEXT_WHITE,
             text="Importar",
             font=(FONT_FAMILY, 10, "bold"),
-            command=on_import
+            command=on_import,
         )
         btn_import.pack(side="right", padx=(10, 0))
 
@@ -869,7 +892,7 @@ class AnalyzerApp:
             hover_fg=TEXT_DARK,
             text="Cancelar",
             font=(FONT_FAMILY, 10),
-            command=on_cancel
+            command=on_cancel,
         )
         btn_cancel.pack(side="right")
 
@@ -879,55 +902,70 @@ class AnalyzerApp:
     def _start_moxfield_import(self, url):
         if self.is_processing:
             return
-        
+
         self.is_processing = True
         self._set_controls_state("disabled")
-        
+
         self.progress["maximum"] = 100
         self.progress["value"] = 0
         self._update_status("Iniciando importación desde la URL del mazo...")
-        
+
         worker = threading.Thread(target=self._moxfield_import_worker, args=(url,), daemon=True)
         worker.start()
-        
+
         self.root.after(100, self._check_queue)
 
     def _moxfield_import_worker(self, url):
         try:
-            self.queue.put({"type": "download_progress", "done": 0, "total": 1, "text": "Obteniendo datos del mazo..."})
+            self.queue.put(
+                {
+                    "type": "download_progress",
+                    "done": 0,
+                    "total": 1,
+                    "text": "Obteniendo datos del mazo...",
+                }
+            )
             deck = fetch_deck(url)
-            
+
             cards = deck.cards
             if not cards:
-                self.queue.put({"type": "download_error", "message": "El mazo importado no contiene cartas."})
+                self.queue.put(
+                    {"type": "download_error", "message": "El mazo importado no contiene cartas."}
+                )
                 return
-            
+
             dest_dir = Path(__file__).parent.absolute() / "workdir" / "scryfall_analyzer"
             dest_dir.mkdir(parents=True, exist_ok=True)
-            
+
             def progress_cb(done, total):
-                self.queue.put({
-                    "type": "download_progress",
-                    "done": done,
-                    "total": total,
-                    "text": f"Descargando imágenes de Scryfall ({done}/{total})...."
-                })
-            
+                self.queue.put(
+                    {
+                        "type": "download_progress",
+                        "done": done,
+                        "total": total,
+                        "text": f"Descargando imágenes de Scryfall ({done}/{total})....",
+                    }
+                )
+
             dl_results = download_deck_images(cards, dest_dir, progress_cb=progress_cb)
-            
+
             downloaded_paths = []
             for card, front_path, back_path in dl_results:
                 if front_path and front_path.exists():
                     downloaded_paths.append(front_path)
                 if back_path and back_path.exists():
                     downloaded_paths.append(back_path)
-            
-            self.queue.put({"type": "download_done", "files": downloaded_paths, "deck_name": deck.name})
-            
+
+            self.queue.put(
+                {"type": "download_done", "files": downloaded_paths, "deck_name": deck.name}
+            )
+
         except DeckImportError as e:
             self.queue.put({"type": "download_error", "message": f"Error al importar el mazo: {e}"})
         except ScryfallError as e:
-            self.queue.put({"type": "download_error", "message": f"Error al descargar de Scryfall: {e}"})
+            self.queue.put(
+                {"type": "download_error", "message": f"Error al descargar de Scryfall: {e}"}
+            )
         except Exception as e:
             self.queue.put({"type": "download_error", "message": f"Error inesperado: {e}"})
 

@@ -1,4 +1,3 @@
-
 import pytest
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -63,20 +62,28 @@ class TestQualityCommon:
 
     def test_dark_image_fails_brightness_when_enabled(self, test_images):
         # With brightness/contrast check enabled -> fail
-        ok, score, dims = check_image_quality(test_images["dark"], blur_threshold=50.0, check_brightness_contrast=True)
+        ok, score, dims = check_image_quality(
+            test_images["dark"], blur_threshold=50.0, check_brightness_contrast=True
+        )
         assert ok is False
 
         # With brightness/contrast check disabled -> pass (since sharpness of all-black is 0.0, set threshold=0.0)
-        ok_ign, score_ign, dims_ign = check_image_quality(test_images["dark"], blur_threshold=0.0, check_brightness_contrast=False)
+        ok_ign, score_ign, dims_ign = check_image_quality(
+            test_images["dark"], blur_threshold=0.0, check_brightness_contrast=False
+        )
         assert ok_ign is True
 
     def test_low_contrast_image_fails_contrast_when_enabled(self, test_images):
         # With brightness/contrast check enabled -> fail
-        ok, score, dims = check_image_quality(test_images["low_contrast"], blur_threshold=50.0, check_brightness_contrast=True)
+        ok, score, dims = check_image_quality(
+            test_images["low_contrast"], blur_threshold=50.0, check_brightness_contrast=True
+        )
         assert ok is False
 
         # With brightness/contrast check disabled -> pass (set threshold=0.0)
-        ok_ign, score_ign, dims_ign = check_image_quality(test_images["low_contrast"], blur_threshold=0.0, check_brightness_contrast=False)
+        ok_ign, score_ign, dims_ign = check_image_quality(
+            test_images["low_contrast"], blur_threshold=0.0, check_brightness_contrast=False
+        )
         assert ok_ign is True
 
     def test_analyze_single_image_output_format(self, test_images):
@@ -90,6 +97,8 @@ class TestQualityCommon:
         assert res_dark["is_ok"] is False
         assert "Muy Oscuro" in res_dark["brightness"]
 
-        res_dark_disabled = analyze_single_image(test_images["dark"], check_brightness_contrast=False)
+        res_dark_disabled = analyze_single_image(
+            test_images["dark"], check_brightness_contrast=False
+        )
         # It still flags dark, but with "(Ignorado)" and doesn't fail is_ok (if other checks pass)
         assert "Muy Oscuro (Ignorado)" in res_dark_disabled["brightness"]

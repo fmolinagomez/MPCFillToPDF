@@ -11,7 +11,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -38,6 +38,7 @@ from gui.widgets import (
     notify,
 )
 from gui.xml_tab import XmlTabMixin
+from gui.ygo_tab import YGOTabMixin
 from src.app_settings import AppSettings, load_settings
 from src.cancellation import Cancelled
 from src.constants import CARDS_PER_PAGE, Stage
@@ -48,15 +49,13 @@ from src.downloader import (
     DownloadRateLimitError,
     DownloadTimeoutError,
 )
-from src.lorcana_scraper import LocanaDeck, get_lorcana_back
-from src.lorcana_scraper import download_images as lorcana_download
-from src.lorcana_scraper import expand_deck as lorcana_expand
-from src.op_scraper import OPDeck, get_op_backs
-from src.op_scraper import download_images as op_download
-from src.op_scraper import expand_deck as op_expand
+from src.execution_plan import build_combined_print_run, standalone_print_batches
+from src.lorcana_scraper import LocanaDeck
+from src.op_scraper import OPDeck
 from src.parser import CardOrder
 from src.pipeline import run_locals_only, run_plan
 from src.precheck import (
+    XmlReport,
     analyze,
     check_drive_access,
     collect_drive_ids,
@@ -64,12 +63,27 @@ from src.precheck import (
     plan,
     write_manifest,
 )
-from src.rb_scraper import RBDeck, get_rb_backs
-from src.rb_scraper import download_images as rb_download
-from src.rb_scraper import expand_deck as rb_expand
+from src.print_batch import PrintBatch
+from src.print_run import StandalonePrintRun
+from src.rb_scraper import RBDeck
 from src.scraper_utils import resources_dir, sanitize_filename
 from src.scryfall import download_deck_images as scryfall_download
+from src.tcg_batches import (
+    LorcanaBatchAdapter,
+    MagicBatchAdapter,
+    OnePieceBatchAdapter,
+    RiftboundBatchAdapter,
+    YugiohBatchAdapter,
+)
 from src.validator import ValidationWarning
+from src.worker_events import (
+    FileEvent,
+    ProgressEvent,
+    RunFinishedEvent,
+    VerificationWarningEvent,
+    normalize_event,
+)
+from src.ygo_scraper import YGODeck
 
 _log = logging.getLogger(__name__)
 
@@ -84,6 +98,7 @@ class MtgUrlDeck:
     back_path: Path | None = None
     format: str = "commander"
     include_separator: bool = False
+    selected_card_ids: set[int] | None = None
 
     @property
     def display_name(self) -> str:
@@ -101,14 +116,17 @@ class MtgUrlDeck:
         main_side_count = sum(
             c.quantity
             for c in self.cards
-            if c.zone == "main"
-            or (c.zone == "side" and self.include_side)
+            if (self.selected_card_ids is None or id(c) in self.selected_card_ids)
+            and (c.zone == "main" or (c.zone == "side" and self.include_side))
         )
         token_count = 0
         if self.include_tokens:
             seen_tokens = set()
             for c in self.cards:
-                if c.zone == "token" and c.layout in ("token", "emblem", "double_faced_token"):
+                if (self.selected_card_ids is None or id(c) in self.selected_card_ids) and (
+                    c.zone == "token"
+                    and (not c.layout or c.layout in ("token", "emblem", "double_faced_token"))
+                ):
                     key = ((c.set_code or "").lower(), c.collector_number or "")
                     if key not in seen_tokens:
                         seen_tokens.add(key)
@@ -117,6 +135,19 @@ class MtgUrlDeck:
         if self.include_separator:
             base += 1
         return base
+
+    def includes(self, card: DeckCard) -> bool:
+        if self.selected_card_ids is not None and id(card) not in self.selected_card_ids:
+            return False
+        if card.zone == "main":
+            return True
+        if card.zone == "side":
+            return self.include_side
+        if card.zone == "token":
+            return self.include_tokens and (
+                not card.layout or card.layout in ("token", "emblem", "double_faced_token")
+            )
+        return False
 
 
 @dataclass
@@ -130,7 +161,41 @@ class AppState:
     mtg_url_decks: list[MtgUrlDeck] = field(default_factory=list)
 
 
-class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, SettingsTabMixin):
+@dataclass(frozen=True)
+class ExecutionRequest:
+    """Snapshot of GUI state consumed by the worker without touching Tkinter."""
+
+    plan: object | None
+    reports: tuple[XmlReport, ...]
+    fronts_only: bool
+    keep_cache: bool
+    local_fronts: tuple[Path, ...]
+    local_backs: tuple[Path, ...]
+    extra_backs: tuple[Path | None, ...]
+    crop_map: dict[Path, bool]
+    op_decks: tuple[OPDeck, ...]
+    rb_decks: tuple[tuple[RBDeck, bool], ...]
+    lorcana_decks: tuple[LocanaDeck, ...]
+    ygo_decks: tuple[tuple[YGODeck, bool], ...]
+    mtg_decks: tuple[MtgUrlDeck, ...]
+    cut_line_color: str
+    cut_line_style: str
+    cut_line_width: float
+    cut_line_over_cards: bool
+    cut_line_over_fronts: bool
+    cut_line_over_backs: bool
+    max_pdf_bytes: int
+
+
+class App(
+    XmlTabMixin,
+    OPTabMixin,
+    RBTabMixin,
+    LorcanaTabMixin,
+    YGOTabMixin,
+    LocalsTabMixin,
+    SettingsTabMixin,
+):
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(APP_TITLE)
@@ -165,6 +230,9 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
 
         self._lorcana_decks: list[LocanaDeck] = []
         self._lorcana_deck_rows: list[dict] = []
+
+        self._ygo_decks: list[YGODeck] = []
+        self._ygo_deck_rows: list[dict] = []
 
         self._build_ui()
         self.root.after(80, self._drain_events)
@@ -252,6 +320,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         self._op_icon_img = load_tab_icon("op_icon")
         self._rb_icon_img = load_tab_icon("riftbound_icon")
         self._lorcana_icon_img = load_tab_icon("lorcana_icon")
+        self._ygo_icon_img = load_tab_icon("yugioh_icon")
 
         magic_frame = ttk.Frame(notebook)
         magic_kw: dict = {"text": " Magic"}
@@ -285,15 +354,27 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         notebook.add(lorcana_frame, **lorcana_kw)
         self._build_lorcana_tab(lorcana_frame)
 
+        ygo_frame = ttk.Frame(notebook)
+        ygo_kw: dict = {"text": " Yu-Gi-Oh!"}
+        if self._ygo_icon_img:
+            ygo_kw["image"] = self._ygo_icon_img
+            ygo_kw["compound"] = "left"
+        notebook.add(ygo_frame, **ygo_kw)
+        self._build_yugioh_tab(ygo_frame)
+
         settings_frame = ttk.Frame(notebook)
         notebook.add(settings_frame, text=" ⚙ Configuración")
         self._build_settings_tab(settings_frame)
         self._settings_tab_idx = notebook.index("end") - 1
+        self._was_on_settings_tab = False
 
         notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
 
     def _on_notebook_tab_changed(self, _event=None) -> None:
         on_settings = self._game_notebook.index("current") == self._settings_tab_idx
+        if self._was_on_settings_tab and not on_settings:
+            self._save_max_pdf_size_input()
+        self._was_on_settings_tab = on_settings
         if on_settings:
             self._locals_pane.grid_remove()
             self._game_notebook.grid_configure(columnspan=2, padx=0)
@@ -313,7 +394,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         canvas.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
-        
+
         inner = ttk.Frame(canvas)
         window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
@@ -342,7 +423,6 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         inner.bind("<Configure>", _on_inner_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
         return canvas, inner, window_id
-
 
     @staticmethod
     def _decode_drop(files) -> list[Path]:
@@ -397,6 +477,28 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def _extra_card_count(self) -> int:
+        """Return cards appended to the last XML PDF job."""
+        return (
+            len(self.state.local_fronts)
+            + sum(deck.total_slots for deck in self._op_decks)
+            + sum(deck.total_slots for deck in self._rb_decks)
+            + sum(deck.total_slots for deck in self._lorcana_decks)
+            + sum(deck.active_count for deck in self.state.mtg_url_decks)
+        )
+
+    def _loaded_xml_plan(self):
+        """Build the current XML plan from already parsed orders, if complete."""
+        reports: list[XmlReport] = []
+        for path in self.state.xml_paths:
+            order = self._xml_orders.get(path)
+            if order is None:
+                return None
+            cards = sum(len(card.slots) for card in order.fronts)
+            remainder = cards % CARDS_PER_PAGE
+            reports.append(XmlReport(path, cards, (CARDS_PER_PAGE - remainder) if remainder else 0))
+        return plan(reports, local_count=self._extra_card_count())
+
     def _update_preflight(self) -> None:
         for widget in self._preflight_labels:
             widget.destroy()
@@ -408,6 +510,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             and not self._op_decks
             and not self._rb_decks
             and not self._lorcana_decks
+            and not self._ygo_decks
             and not self.state.mtg_url_decks
         ):
             self._preflight_frame.pack_forget()
@@ -476,6 +579,16 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 ]
             )
 
+        for deck, row in zip(self._ygo_decks, self._ygo_deck_rows):
+            n = deck.total_slots(row["include_side_var"].get())
+            _row(
+                [
+                    (f"• Yu-Gi-Oh! – {ellipsize(deck.name, 22)}: ", "normal"),
+                    (f"{n}", "bold"),
+                    (" cartas (PDF separado)", "normal"),
+                ]
+            )
+
         for deck in self.state.mtg_url_decks:
             n = deck.active_count
             xml_total += n
@@ -499,13 +612,44 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
 
         total_cards = xml_total + local_count
         if total_cards:
-            pairs = math.ceil(total_cards / CARDS_PER_PAGE)
-            rem = total_cards % CARDS_PER_PAGE
-            blanks = (CARDS_PER_PAGE - rem) if rem else 0
-
             bled_dir = work_dir() / "bled"
             cached = len([f for f in bled_dir.iterdir() if f.is_file()]) if bled_dir.exists() else 0
             cache_str = f" · {cached} imagen(es) en caché" if cached else ""
+
+            xml_plan = self._loaded_xml_plan() if self.state.xml_paths else None
+            if xml_plan is not None:
+                _row(
+                    [
+                        ("Plan XML: ", "normal"),
+                        (f"{len(xml_plan.jobs)} PDF(s)", "bold"),
+                        ("; las cartas adicionales se añaden al último PDF.", "normal"),
+                    ]
+                )
+                for job in xml_plan.jobs:
+                    if job.is_merged:
+                        names = ", ".join(path.name for path in job.xml_paths)
+                        _row([(f"  ↳ Fusión: {names} → {job.total_cards} cartas", "bold")])
+                    elif job.extra_locals:
+                        _row(
+                            [
+                                (
+                                    f"  ↳ {job.display_name}: {job.cards} XML + "
+                                    f"{job.extra_locals} adicionales → {job.total_cards} cartas",
+                                    "normal",
+                                )
+                            ]
+                        )
+                    else:
+                        _row([(f"  ↳ {job.display_name}: {job.total_cards} cartas", "normal")])
+                    if job.has_blanks:
+                        gap = "hueco" if job.blanks == 1 else "huecos"
+                        _row([(f"     ⚠ {job.blanks} {gap} en blanco", "warn")])
+                blanks = sum(job.blanks for job in xml_plan.jobs)
+                pairs = sum(math.ceil(job.total_cards / CARDS_PER_PAGE) for job in xml_plan.jobs)
+            else:
+                pairs = math.ceil(total_cards / CARDS_PER_PAGE)
+                rem = total_cards % CARDS_PER_PAGE
+                blanks = (CARDS_PER_PAGE - rem) if rem else 0
 
             if blanks:
                 _row(
@@ -534,6 +678,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             or self._op_decks
             or self._rb_decks
             or self._lorcana_decks
+            or self._ygo_decks
             or bool(self.state.mtg_url_decks)
         )
         if ready and not self.running:
@@ -557,6 +702,39 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         for p, c in zip(self.state.local_fronts, self.state.local_front_crop):
             m[p] = c
         return m
+
+    def _build_execution_request(
+        self, plan_: object | None, reports: list[XmlReport], fronts_only: bool
+    ) -> ExecutionRequest:
+        """Capture every worker input while running on the Tkinter thread."""
+        return ExecutionRequest(
+            plan=plan_,
+            reports=tuple(reports),
+            fronts_only=fronts_only,
+            keep_cache=bool(self.keep_cache.get()),
+            local_fronts=tuple(self.state.local_fronts),
+            local_backs=tuple(self.state.local_backs),
+            extra_backs=tuple(self._resolve_extra_backs()),
+            crop_map=self._build_crop_map(),
+            op_decks=tuple(self._op_decks),
+            rb_decks=tuple(
+                (deck, bool(row["print_runes_var"].get()))
+                for deck, row in zip(self._rb_decks, self._rb_deck_rows)
+            ),
+            lorcana_decks=tuple(self._lorcana_decks),
+            ygo_decks=tuple(
+                (deck, bool(row["include_side_var"].get()))
+                for deck, row in zip(self._ygo_decks, self._ygo_deck_rows)
+            ),
+            mtg_decks=tuple(replace(deck) for deck in self.state.mtg_url_decks),
+            cut_line_color=self._settings.cut_line_color,
+            cut_line_style=self._settings.cut_line_style,
+            cut_line_width=self._settings.cut_line_width,
+            cut_line_over_cards=self._settings.cut_line_over_cards,
+            cut_line_over_fronts=self._settings.cut_line_over_fronts,
+            cut_line_over_backs=self._settings.cut_line_over_backs,
+            max_pdf_bytes=self._settings.max_pdf_size_mb * 1_000_000,
+        )
 
     def _confirm_cut_lines(self) -> bool:
         """Show a modal summary of cut-line settings before generating.
@@ -669,6 +847,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             and not self._op_decks
             and not self._rb_decks
             and not self._lorcana_decks
+            and not self._ygo_decks
             and not self.state.mtg_url_decks
         ):
             messagebox.showerror(
@@ -716,38 +895,25 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 self._show_error_dialog(f"No se pudo analizar el XML:\n{e}")
                 return
 
-            plan_ = plan(reports, local_count=len(self.state.local_fronts))
+            plan_ = plan(reports, local_count=self._extra_card_count())
 
-            if format_warning(plan_):
-                combined_total = (
-                    sum(r.cards for r in reports)
-                    + len(self.state.local_fronts)
-                    + sum(d.total_slots for d in self._op_decks)
-                    + sum(d.total_slots for d in self._rb_decks)
-                    + sum(d.total_slots for d in self._lorcana_decks)
-                    + sum(d.active_count for d in self.state.mtg_url_decks)
-                )
-                combined_rem = combined_total % CARDS_PER_PAGE
-                if combined_rem != 0:
-                    combined_blanks = CARDS_PER_PAGE - combined_rem
-                    s = "hueco" if combined_blanks == 1 else "huecos"
-                    combined_warning = (
-                        f"Aviso: {combined_total} carta(s) en total no es múltiplo de 9.\n"
-                        f"La última página tendrá {combined_blanks} {s} en blanco "
-                        "(la imprenta cobra la página entera aunque no esté llena)."
-                    )
-                    if not messagebox.askyesno(
-                        APP_TITLE,
-                        combined_warning + "\n\n¿Continuar de todos modos?",
-                        icon=messagebox.WARNING,
-                    ):
-                        return
+            warning = format_warning(plan_)
+            if warning and not messagebox.askyesno(
+                APP_TITLE,
+                warning + "\n\n¿Continuar de todos modos?",
+                icon=messagebox.WARNING,
+            ):
+                return
         else:
             total = (
                 len(self.state.local_fronts)
                 + sum(d.total_slots for d in self._op_decks)
                 + sum(d.total_slots for d in self._rb_decks)
                 + sum(d.total_slots for d in self._lorcana_decks)
+                + sum(
+                    deck.total_slots(row["include_side_var"].get())
+                    for deck, row in zip(self._ygo_decks, self._ygo_deck_rows)
+                )
                 + sum(d.active_count for d in self.state.mtg_url_decks)
             )
             rem = total % CARDS_PER_PAGE
@@ -774,19 +940,10 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         self.progress["value"] = 0
         self.status_var.set("Preparando…")
         self._reset_xml_download_progress()
+        request = self._build_execution_request(plan_, reports, fronts_only)
         self.worker = threading.Thread(
             target=self._work,
-            args=(
-                plan_,
-                reports,
-                fronts_only,
-                self._settings.cut_line_color,
-                self._settings.cut_line_style,
-                self._settings.cut_line_width,
-                self._settings.cut_line_over_cards,
-                self._settings.cut_line_over_fronts,
-                self._settings.cut_line_over_backs,
-            ),
+            args=(request,),
             daemon=True,
         )
         self.worker.start()
@@ -806,16 +963,60 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
 
     def _work(
         self,
-        plan_,
-        reports,
+        request: ExecutionRequest | object | None = None,
+        reports: tuple[XmlReport, ...] | list | None = None,
         fronts_only: bool = False,
-        cut_line_color: str = "#000000",
-        cut_line_style: str = "ticks",
-        cut_line_width: float = 1.0,
-        cut_line_over_cards: bool = False,
-        cut_line_over_fronts: bool = True,
-        cut_line_over_backs: bool = True,
+        cut_line_color: str | None = None,
+        cut_line_style: str | None = None,
+        cut_line_width: float | None = None,
+        cut_line_over_cards: bool | None = None,
+        cut_line_over_fronts: bool | None = None,
+        cut_line_over_backs: bool | None = None,
+        max_pdf_bytes: int | None = None,
     ) -> None:
+        if not isinstance(request, ExecutionRequest):
+            plan_ = request
+            request = self._build_execution_request(
+                plan_,
+                reports or (),
+                fronts_only,
+            )
+            overrides = {}
+            if cut_line_color is not None:
+                overrides["cut_line_color"] = cut_line_color
+            if cut_line_style is not None:
+                overrides["cut_line_style"] = cut_line_style
+            if cut_line_width is not None:
+                overrides["cut_line_width"] = cut_line_width
+            if cut_line_over_cards is not None:
+                overrides["cut_line_over_cards"] = cut_line_over_cards
+            if cut_line_over_fronts is not None:
+                overrides["cut_line_over_fronts"] = cut_line_over_fronts
+            if cut_line_over_backs is not None:
+                overrides["cut_line_over_backs"] = cut_line_over_backs
+            if max_pdf_bytes is not None:
+                overrides["max_pdf_bytes"] = max_pdf_bytes
+            if overrides:
+                request = replace(request, **overrides)
+        plan_ = request.plan
+        reports = request.reports
+        fronts_only = request.fronts_only
+        cut_line_color = request.cut_line_color
+        cut_line_style = request.cut_line_style
+        cut_line_width = request.cut_line_width
+        cut_line_over_cards = request.cut_line_over_cards
+        cut_line_over_fronts = request.cut_line_over_fronts
+        cut_line_over_backs = request.cut_line_over_backs
+        max_pdf_bytes = request.max_pdf_bytes
+        ygo_decks = request.ygo_decks
+        op_decks = request.op_decks
+        rb_decks = request.rb_decks
+        lorcana_decks = request.lorcana_decks
+        mtg_decks = request.mtg_decks
+        local_fronts = request.local_fronts
+        local_backs = request.local_backs
+        extra_backs = request.extra_backs
+        crop_map = request.crop_map
         run_dir = None
         wd = None
         try:
@@ -831,9 +1032,6 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             run_dir = out / datetime.now().strftime("%d_%m_%Y_%H-%M-%S")
             run_dir.mkdir(parents=True, exist_ok=True)
             generated: list[Path] = []
-            extra_backs = self._resolve_extra_backs()
-            crop_map = self._build_crop_map()
-
             _run_start = time.time()
             _phase_first: dict[str, float] = {}
             _phase_done: dict[str, float] = {}
@@ -845,322 +1043,78 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 if done == total and total > 0:
                     _phase_done[stage] = now
 
-            op_fronts: list[Path] = []
-            op_backs_resolved: list[Path] = []
-            op_crop_extra: dict[Path, bool] = {}
-            op_standard_back: Path | None = None
+            def _report_tcg(stage: str, done: int, total: int, label: str) -> None:
+                _track(stage, done, total)
+                self.events.put(ProgressEvent(stage, done, total, label))
 
-            if self._op_decks:
-                op_raw_dir = wd / "op_raw"
-                op_label = " + ".join(d.name for d in self._op_decks)
-                op_total_unique = sum(len({c.card_id for c in d.cards}) for d in self._op_decks)
-                self.events.put(
-                    ("progress", "download", 0, op_total_unique, f"One Piece – {op_label}")
-                )
-                image_map_op: dict[str, Path] = {}
-                done_dl_op = 0
-                for deck in self._op_decks:
-                    _off_op = done_dl_op
+            ygo_batch = YugiohBatchAdapter(ygo_decks, wd, self.cancel_event, _report_tcg).prepare()
+            if self.cancel_event.is_set():
+                self.events.put(("cancelled", run_dir))
+                return
+            op_batch = OnePieceBatchAdapter(op_decks, wd, self.cancel_event, _report_tcg).prepare()
+            rb_batch = RiftboundBatchAdapter(rb_decks, wd, self.cancel_event, _report_tcg).prepare()
+            lorcana_batch = LorcanaBatchAdapter(
+                lorcana_decks, wd, self.cancel_event, _report_tcg
+            ).prepare()
+            mtg_batch = MagicBatchAdapter(
+                mtg_decks,
+                wd,
+                resources_dir() / "backs" / "mtg" / "back.jpg",
+                local_backs,
+                self.cancel_event,
+                _report_tcg,
+                scryfall_downloader=scryfall_download,
+                separator_creator=self._create_separator_image,
+                scryfall_lang=self._settings.scryfall_lang,
+                scryfall_quality=self._settings.scryfall_quality,
+                scryfall_fail_policy=self._settings.scryfall_fail_policy,
+                scryfall_quality_check=self._settings.scryfall_quality_check,
+                scryfall_blur_threshold=self._settings.scryfall_blur_threshold,
+                scryfall_brightness_contrast_check=self._settings.scryfall_brightness_contrast_check,
+                scryfall_minimize_tokens=self._settings.scryfall_minimize_tokens,
+            ).prepare()
 
-                    def _op_prog(done, total, _o=_off_op, _t=op_total_unique, _lbl=op_label):
-                        _track("download", _o + done, _t)
-                        self.events.put(
-                            ("progress", "download", _o + done, _t, f"One Piece – {_lbl}")
-                        )
+            if self.cancel_event.is_set():
+                self.events.put(("cancelled", run_dir))
+                return
 
-                    part = op_download(
-                        deck, op_raw_dir, cancel_event=self.cancel_event, progress_cb=_op_prog
-                    )
-                    image_map_op.update(part)
-                    done_dl_op += len({c.card_id for c in deck.cards})
-                    if self.cancel_event.is_set():
-                        self.events.put(("cancelled", run_dir))
-                        return
-                op_standard_back, op_leader_back_res = get_op_backs()
-                leader_backs_op: dict[str, Path] = {}
-                for deck in self._op_decks:
-                    if deck.leader and deck.leader.card_id not in leader_backs_op:
-                        leader_backs_op[deck.leader.card_id] = op_leader_back_res
-                for deck in self._op_decks:
-                    lb = leader_backs_op.get(deck.leader.card_id) if deck.leader else None
-                    fronts_op, backs_op = op_expand(deck, image_map_op, lb, op_standard_back)
-                    op_fronts.extend(fronts_op)
-                    op_backs_resolved.extend(op_standard_back if b is None else b for b in backs_op)
-                op_all_back_paths = {op_standard_back} | set(leader_backs_op.values())
-                op_crop_extra = {p: False for p in set(op_fronts) | op_all_back_paths}
+            batches = [
+                PrintBatch("locales", list(local_fronts), list(extra_backs), dict(crop_map)),
+                ygo_batch,
+                op_batch,
+                rb_batch,
+                lorcana_batch,
+                mtg_batch,
+            ]
+            for batch in standalone_print_batches(batches):
+                self.events.put(FileEvent(1, 1, batch.name))
 
-            rb_fronts: list[Path] = []
-            rb_backs_resolved: list[Path] = []
-            rb_crop_extra: dict[Path, bool] = {}
-            rb_default_back: Path | None = None
+                def _standalone_progress(stage, done, total, _label=batch.name):
+                    _track(stage, done, total)
+                    self.events.put(ProgressEvent(stage, done, total, _label))
 
-            if self._rb_decks:
-                rb_raw_dir = wd / "rb_raw"
-                rb_label = " + ".join(d.name for d in self._rb_decks)
-                rb_total_unique = sum(len({c.variant_id for c in d.cards}) for d in self._rb_decks)
-                self.events.put(
-                    ("progress", "download", 0, rb_total_unique, f"Riftbound – {rb_label}")
-                )
-                image_map_rb: dict[str, Path] = {}
-                done_dl_rb = 0
-                for deck in self._rb_decks:
-                    _off_rb = done_dl_rb
-
-                    def _rb_prog(done, total, _o=_off_rb, _t=rb_total_unique, _lbl=rb_label):
-                        _track("download", _o + done, _t)
-                        self.events.put(
-                            ("progress", "download", _o + done, _t, f"Riftbound – {_lbl}")
-                        )
-
-                    part = rb_download(
-                        deck, rb_raw_dir, cancel_event=self.cancel_event, progress_cb=_rb_prog
-                    )
-                    image_map_rb.update(part)
-                    done_dl_rb += len({c.variant_id for c in deck.cards})
-                    if self.cancel_event.is_set():
-                        self.events.put(("cancelled", run_dir))
-                        return
-                rb_backs_map = get_rb_backs()
-                rb_default_back = rb_backs_map.get("maindeck") or next(iter(rb_backs_map.values()))
-                rb_all_back_paths = set(rb_backs_map.values())
-                print_runes_flags = [row["print_runes_var"].get() for row in self._rb_deck_rows]
-                for idx, deck in enumerate(self._rb_decks):
-                    include_runes = print_runes_flags[idx] if idx < len(print_runes_flags) else True
-                    fronts_rb, backs_rb = rb_expand(
-                        deck, image_map_rb, rb_backs_map, include_runes=include_runes
-                    )
-                    rb_fronts.extend(fronts_rb)
-                    rb_backs_resolved.extend(rb_default_back if b is None else b for b in backs_rb)
-                rb_crop_extra = {p: False for p in set(rb_fronts) | rb_all_back_paths}
-
-            lorcana_fronts: list[Path] = []
-            lorcana_backs_resolved: list[Path | None] = []
-            lorcana_crop_extra: dict[Path, bool] = {}
-            lorcana_default_back: Path | None = None
-
-            if self._lorcana_decks:
-                lorcana_raw_dir = wd / "lorcana_raw"
-                lorcana_label = " + ".join(d.name for d in self._lorcana_decks)
-                lorcana_total_unique = sum(
-                    len({c.card_id for c in d.cards}) for d in self._lorcana_decks
-                )
-                self.events.put(
-                    (
-                        "progress",
-                        "download",
-                        0,
-                        lorcana_total_unique,
-                        f"Lorcana – {lorcana_label}",
+                generated.extend(
+                    StandalonePrintRun(batch).render(
+                        run_dir,
+                        wd,
+                        _standalone_progress,
+                        self.cancel_event,
+                        fronts_only=fronts_only,
+                        cut_line_color=cut_line_color,
+                        cut_line_style=cut_line_style,
+                        cut_line_width=cut_line_width,
+                        cut_line_over_cards=cut_line_over_cards,
+                        cut_line_over_fronts=cut_line_over_fronts,
+                        cut_line_over_backs=cut_line_over_backs,
+                        max_pdf_bytes=max_pdf_bytes,
                     )
                 )
-                image_map_lorcana: dict[str, Path] = {}
-                done_dl_lorcana = 0
-                for deck in self._lorcana_decks:
-                    _off_lorcana = done_dl_lorcana
-
-                    def _lorcana_prog(
-                        done, total, _o=_off_lorcana, _t=lorcana_total_unique, _lbl=lorcana_label
-                    ):
-                        _track("download", _o + done, _t)
-                        self.events.put(
-                            ("progress", "download", _o + done, _t, f"Lorcana – {_lbl}")
-                        )
-
-                    part = lorcana_download(
-                        deck,
-                        lorcana_raw_dir,
-                        cancel_event=self.cancel_event,
-                        progress_cb=_lorcana_prog,
-                    )
-                    image_map_lorcana.update(part)
-                    done_dl_lorcana += len({c.card_id for c in deck.cards})
-                    if self.cancel_event.is_set():
-                        self.events.put(("cancelled", run_dir))
-                        return
-                lorcana_back = get_lorcana_back()
-                lorcana_default_back = lorcana_back
-                for deck in self._lorcana_decks:
-                    fronts_lorcana, backs_lorcana = lorcana_expand(deck, image_map_lorcana)
-                    lorcana_fronts.extend(fronts_lorcana)
-                    lorcana_backs_resolved.extend(
-                        lorcana_back if b is None else b for b in backs_lorcana
-                    )
-                lorcana_crop_extra = {p: False for p in set(lorcana_fronts) | {lorcana_back}}
-
-            mtg_fronts: list[Path] = []
-            mtg_backs_resolved: list[Path] = []
-            mtg_crop_extra: dict[Path, bool] = {}
-            mtg_default_back: Path | None = None
-
-            if self.state.mtg_url_decks:
-                mtg_default_back = resources_dir() / "backs" / "mtg" / "back.jpg"
-                scryfall_dir = wd / "scryfall"
-                
-                # 1. Identify active cards and commanders for each deck
-                decks_with_cards = []
-                for _deck in self.state.mtg_url_decks:
-                    deck_cards = [
-                        c for c in _deck.cards
-                        if c.zone == "main"
-                        or (c.zone == "side" and _deck.include_side)
-                        or (c.zone == "token" and _deck.include_tokens and c.layout in ("token", "emblem", "double_faced_token"))
-                    ]
-                    
-                    # Find commander card
-                    commander_card = None
-                    for c in _deck.cards:
-                        if getattr(c, "is_commander", False):
-                            commander_card = c
-                            break
-                    if not commander_card:
-                        for c in _deck.cards:
-                            if c.zone == "main":
-                                commander_card = c
-                                break
-                    
-                    active_cards = []
-                    seen_tokens = set()
-                    from copy import copy
-                    for c in deck_cards:
-                        if c.quantity <= 0:
-                            continue
-                        if c.zone == "token":
-                            key = ((c.set_code or "").lower(), c.collector_number or "")
-                            if key in seen_tokens:
-                                continue
-                            seen_tokens.add(key)
-                            c_copy = copy(c)
-                            c_copy.quantity = 1
-                            active_cards.append(c_copy)
-                        else:
-                            active_cards.append(c)
-                    
-                    # Sort active cards by category (Main -> Tokens -> Sideboard) and then alphabetically by name
-                    zone_order = {"main": 0, "token": 1, "side": 2}
-                    active_cards.sort(key=lambda x: (zone_order.get(x.zone, 0), x.name.casefold()))
-                    
-                    decks_with_cards.append({
-                        "deck": _deck,
-                        "active_cards": active_cards,
-                        "commander": commander_card
-                    })
-
-                # 2. Collect all cards to download (unique cards will be handled by downloader cache)
-                mtg_cards_all = []
-                for item in decks_with_cards:
-                    mtg_cards_all.extend(item["active_cards"])
-                    # If commander is not in active_cards, we add a copy with quantity 0 to download it
-                    if item["commander"] and not any(c.name == item["commander"].name and c.set_code == item["commander"].set_code and c.collector_number == item["commander"].collector_number for c in item["active_cards"]):
-                        from copy import copy
-                        comm_dummy = copy(item["commander"])
-                        comm_dummy.quantity = 0
-                        mtg_cards_all.append(comm_dummy)
-
-                mtg_label = f"Magic – {len(self.state.mtg_url_decks)} mazo(s)"
-                self.events.put(("progress", "download", 0, len(mtg_cards_all), mtg_label))
-
-                def _mtg_prog(done: int, total: int) -> None:
-                    _track("download", done, total)
-                    self.events.put(("progress", "download", done, total, mtg_label))
-
-                dl_results = scryfall_download(
-                    mtg_cards_all,
-                    scryfall_dir,
-                    _mtg_prog,
-                    cancel_event=self.cancel_event,
-                    lang=self._settings.scryfall_lang,
-                    quality=self._settings.scryfall_quality,
-                    fail_policy=self._settings.scryfall_fail_policy,
-                    quality_check=self._settings.scryfall_quality_check,
-                    blur_threshold=self._settings.scryfall_blur_threshold,
-                    brightness_contrast_check=self._settings.scryfall_brightness_contrast_check,
-                )
-
-                if self.cancel_event.is_set():
-                    self.events.put(("cancelled", run_dir))
-                    return
-
-                # Map downloaded images by (set, cn)
-                image_map = {}
-                for card, front_path, back_path in dl_results:
-                    image_map[(card.set_code.lower(), card.collector_number)] = (front_path, back_path)
-
-                local_back_set = set(self.state.local_backs)
-                all_mtg_back_paths: set[Path] = {mtg_default_back}
-                
-                printed_tokens_global = set()
-                for idx, item in enumerate(decks_with_cards):
-                    _deck = item["deck"]
-                    
-                    if _deck.include_separator:
-                        # Insert separator card at the beginning of each deck
-                        commander = item["commander"]
-                        sep_front_path = scryfall_dir / f"separator_{idx}.jpg"
-                        sep_back_path = mtg_default_back
-                        
-                        try:
-                            self._create_separator_image(_deck.display_name, _deck.format, _deck.cards, sep_front_path)
-                        except Exception as e:
-                            _log.error("Error al crear la carta separadora: %s", e)
-                            sep_front_path = None
-                        
-                        if _deck.back_path in local_back_set:
-                            sep_back_path = _deck.back_path
-                        
-                        if sep_front_path and sep_front_path.exists():
-                            mtg_fronts.append(sep_front_path)
-                            mtg_backs_resolved.append(sep_back_path)
-                            if sep_back_path:
-                                all_mtg_back_paths.add(sep_back_path)
-                                
-                    # Add deck cards
-                    for card in item["active_cards"]:
-                        comp_key = (card.set_code.lower(), card.collector_number)
-                        front_path, back_path = image_map.get(comp_key, (None, None))
-                        if not front_path or not front_path.exists():
-                            continue
-                        
-                        if card.zone == "token" and self._settings.scryfall_minimize_tokens:
-                            if comp_key in printed_tokens_global:
-                                continue
-                            printed_tokens_global.add(comp_key)
-
-                        if back_path is not None:
-                            resolved_back = back_path
-                        elif _deck.back_path in local_back_set:
-                            resolved_back = _deck.back_path
-                        else:
-                            resolved_back = mtg_default_back
-                        
-                        all_mtg_back_paths.add(resolved_back)
-                        
-                        for _ in range(card.quantity):
-                            mtg_fronts.append(front_path)
-                            mtg_backs_resolved.append(resolved_back)
-
-                mtg_crop_extra = {
-                    p: False
-                    for p in set(mtg_fronts) | all_mtg_back_paths
-                    if p not in local_back_set
-                }
-
-            all_extra_fronts = (
-                list(self.state.local_fronts) + op_fronts + rb_fronts + lorcana_fronts + mtg_fronts
-            )
-            all_extra_backs: list[Path | None] = (
-                list(extra_backs)
-                + op_backs_resolved
-                + rb_backs_resolved
-                + lorcana_backs_resolved
-                + mtg_backs_resolved
-            )
-            all_crop_map = {
-                **crop_map,
-                **op_crop_extra,
-                **rb_crop_extra,
-                **lorcana_crop_extra,
-                **mtg_crop_extra,
-            }
+            combined_run = build_combined_print_run(batches)
+            if plan_ is None and not combined_run.fronts:
+                if not request.keep_cache:
+                    self._cleanup_workdir(wd)
+                self.events.put(RunFinishedEvent(generated, None, run_dir, ""))
+                return
 
             if plan_ is not None:
                 xml_paths_flat = [Path(p) for job in plan_.jobs for p in job.xml_paths]
@@ -1177,14 +1131,14 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     def _verify_cb(done, total):
                         _track(Stage.VERIFY, done, total)
                         self.events.put(
-                            ("progress", Stage.VERIFY, done, total, "XML seleccionados")
+                            ProgressEvent(Stage.VERIFY, done, total, "XML seleccionados")
                         )
 
                     inaccessible = check_drive_access(to_check, _verify_cb)
 
                     if inaccessible and not self.cancel_event.is_set():
                         confirm_event = threading.Event()
-                        self.events.put(("verify_warning", inaccessible, confirm_event))
+                        self.events.put(VerificationWarningEvent(inaccessible, confirm_event))
                         while not confirm_event.wait(timeout=0.1):
                             if self.cancel_event.is_set():
                                 break
@@ -1198,13 +1152,13 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 def cb(stage, done, total):
                     _track(stage, done, total)
                     name = _pdf_label[0] if stage == "pdf" else "Todas las imágenes"
-                    self.events.put(("progress", stage, done, total, name))
+                    self.events.put(ProgressEvent(stage, done, total, name))
 
                 def on_job_pdf_start(job_idx, total_jobs, job_name):
                     job = next((j for j in plan_.jobs if j.base_name == job_name), None)
                     label = job_name + (" (fusión)" if job and job.is_merged else "")
                     _pdf_label[0] = label
-                    self.events.put(("file", job_idx, total_jobs, label))
+                    self.events.put(FileEvent(job_idx, total_jobs, label))
 
                 def on_xml_download_progress(xml_name, done, total):
                     self.events.put(("xml_download_progress", xml_name, done, total))
@@ -1221,9 +1175,9 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     wd,
                     cb,
                     cancel_event=self.cancel_event,
-                    extra_fronts=all_extra_fronts or None,
-                    extra_backs=all_extra_backs or None,
-                    local_crop_map=all_crop_map or None,
+                    extra_fronts=combined_run.fronts or None,
+                    extra_backs=combined_run.backs or None,
+                    local_crop_map=combined_run.crop_map or None,
                     on_job_pdf_start=on_job_pdf_start,
                     on_xml_download_progress=on_xml_download_progress,
                     on_xml_crop_progress=on_xml_crop_progress,
@@ -1235,39 +1189,33 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     cut_line_over_cards=cut_line_over_cards,
                     cut_line_over_fronts=cut_line_over_fronts,
                     cut_line_over_backs=cut_line_over_backs,
+                    max_pdf_bytes=max_pdf_bytes,
                 )
                 generated.extend(pdfs)
                 manifest = write_manifest(plan_, reports, run_dir)
             else:
-                if not all_extra_fronts:
+                if not combined_run.fronts:
                     raise ValueError("No hay cartas para generar.")
-                if self.state.local_fronts and self.state.local_backs:
-                    default_back: Path = self.state.local_backs[0]
-                elif op_standard_back is not None:
-                    default_back = op_standard_back
-                elif rb_default_back is not None:
-                    default_back = rb_default_back
-                elif lorcana_default_back is not None:
-                    default_back = lorcana_default_back
-                elif mtg_default_back is not None:
-                    default_back = mtg_default_back
+                if local_fronts and local_backs:
+                    default_back: Path = local_backs[0]
+                elif combined_run.default_back is not None:
+                    default_back = combined_run.default_back
                 else:
                     raise ValueError("No se encontró reverso por defecto.")
-                total_decks = (
-                    len(self.state.mtg_url_decks)
-                    + len(self._op_decks)
-                    + len(self._rb_decks)
-                    + len(self._lorcana_decks)
-                )
-                if total_decks == 1 and not self.state.local_fronts:
-                    if self.state.mtg_url_decks:
-                        deck_name = self.state.mtg_url_decks[0].name
-                    elif self._op_decks:
-                        deck_name = self._op_decks[0].name
-                    elif self._rb_decks:
-                        deck_name = self._rb_decks[0].name
-                    elif self._lorcana_decks:
-                        deck_name = self._lorcana_decks[0].name
+                total_decks = len(mtg_decks) + len(op_decks) + len(rb_decks) + len(lorcana_decks)
+                if total_decks == 1 and not local_fronts:
+                    if mtg_decks:
+                        deck_name = mtg_decks[0].name
+                    elif op_decks:
+                        deck_name = op_decks[0].name
+                    elif rb_decks:
+                        deck_name = (
+                            rb_decks[0][0].name
+                            if isinstance(rb_decks[0], tuple)
+                            else rb_decks[0].name
+                        )
+                    elif lorcana_decks:
+                        deck_name = lorcana_decks[0].name
                     else:
                         deck_name = ""
 
@@ -1279,31 +1227,31 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     parts = [
                         p
                         for p in [
-                            "locales" if self.state.local_fronts else None,
-                            "One Piece" if op_fronts else None,
-                            "Riftbound" if rb_fronts else None,
-                            "Lorcana" if lorcana_fronts else None,
-                            "magic_url" if mtg_fronts else None,
+                            "locales" if local_fronts else None,
+                            "One Piece" if op_batch.fronts else None,
+                            "Riftbound" if rb_batch.fronts else None,
+                            "Lorcana" if lorcana_batch.fronts else None,
+                            "magic_url" if mtg_batch.fronts else None,
                         ]
                         if p
                     ]
                     base = "_".join(parts) if parts else "combinado"
-                self.events.put(("file", 1, 1, base))
+                self.events.put(FileEvent(1, 1, base))
 
                 def cb(stage, done, total, _label=base):
                     _track(stage, done, total)
-                    self.events.put(("progress", stage, done, total, _label))
+                    self.events.put(ProgressEvent(stage, done, total, _label))
 
                 pdfs = run_locals_only(
-                    all_extra_fronts,
+                    combined_run.fronts,
                     default_back,
                     run_dir,
                     base,
                     wd,
                     cb,
                     cancel_event=self.cancel_event,
-                    extra_backs=all_extra_backs,
-                    local_crop_map=all_crop_map,
+                    extra_backs=combined_run.backs,
+                    local_crop_map=combined_run.crop_map,
                     fronts_only=fronts_only,
                     cut_line_color=cut_line_color,
                     cut_line_style=cut_line_style,
@@ -1311,11 +1259,12 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     cut_line_over_cards=cut_line_over_cards,
                     cut_line_over_fronts=cut_line_over_fronts,
                     cut_line_over_backs=cut_line_over_backs,
+                    max_pdf_bytes=max_pdf_bytes,
                 )
                 generated.extend(pdfs)
                 manifest = None
 
-            if not self.keep_cache.get():
+            if not request.keep_cache:
                 self._cleanup_workdir(wd)
 
             def _fmt_dur(sec: float) -> str:
@@ -1338,44 +1287,54 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 timing_str += f"  Total: {_fmt_dur(total_dur)}"
 
             skipped_tokens_count = 0
-            if self.state.mtg_url_decks:
-                for _deck in self.state.mtg_url_decks:
+            if mtg_decks:
+                for _deck in mtg_decks:
                     if _deck.include_tokens:
                         skipped_tokens_count += sum(
-                            c.quantity for c in _deck.cards
+                            c.quantity
+                            for c in _deck.cards
                             if c.zone == "token"
                             and c.layout not in ("token", "emblem", "double_faced_token")
                         )
 
             # Generate tokens.md if we have MTG URL decks with tokens
-            if self.state.mtg_url_decks:
+            if mtg_decks:
                 has_any_tokens = False
-                for _deck in self.state.mtg_url_decks:
+                for _deck in mtg_decks:
                     if any(c.zone == "token" for c in _deck.cards):
                         has_any_tokens = True
                         break
-                
+
                 if has_any_tokens:
                     md_path = run_dir / "tokens.md"
                     md_lines = ["# Fichas Necesarias por Mazo", ""]
-                    for _deck in self.state.mtg_url_decks:
+                    for _deck in mtg_decks:
                         md_lines.append(f"## Mazo: {_deck.display_name}")
                         tokens = [c for c in _deck.cards if c.zone == "token"]
                         if not tokens:
                             md_lines.append("No se necesitan fichas.")
                             md_lines.append("")
                             continue
-                        
+
                         # Group tokens of this deck by name, set, cn
                         token_groups = {}
                         for c in tokens:
-                            key = (c.name, (c.set_code or "").lower(), c.collector_number or "", c.layout)
+                            key = (
+                                c.name,
+                                (c.set_code or "").lower(),
+                                c.collector_number or "",
+                                c.layout,
+                            )
                             token_groups[key] = token_groups.get(key, 0) + c.quantity
-                        
-                        for (name, set_code, cn, layout), qty in sorted(token_groups.items(), key=lambda x: x[0][0].casefold()):
+
+                        for (name, set_code, cn, layout), qty in sorted(
+                            token_groups.items(), key=lambda x: x[0][0].casefold()
+                        ):
                             is_valid = layout in ("token", "emblem", "double_faced_token")
                             is_included = _deck.include_tokens and is_valid
-                            inc_str = "Incluida en el PDF" if is_included else "No incluida en el PDF"
+                            inc_str = (
+                                "Incluida en el PDF" if is_included else "No incluida en el PDF"
+                            )
                             details = []
                             if set_code:
                                 details.append(set_code.upper())
@@ -1384,14 +1343,16 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                             details_str = f" ({' '.join(details)})" if details else ""
                             md_lines.append(f"- {qty}x {name}{details_str} — *{inc_str}*")
                         md_lines.append("")
-                    
+
                     try:
                         md_path.write_text("\n".join(md_lines), encoding="utf-8")
                         _log.info("Archivo tokens.md generado en: %s", md_path)
                     except Exception as e:
                         _log.error("No se pudo escribir tokens.md: %s", e)
 
-            self.events.put(("done", generated, manifest, run_dir, timing_str, skipped_tokens_count))
+            self.events.put(
+                RunFinishedEvent(generated, manifest, run_dir, timing_str, skipped_tokens_count)
+            )
         except DownloadPartialError as e:
             self.events.put(
                 (
@@ -1415,7 +1376,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
 
     @staticmethod
     def _cleanup_workdir(wd: Path) -> None:
-        for sub in ("raw", "bled", "op_raw", "rb_raw", "lorcana_raw", "scryfall"):
+        for sub in ("raw", "bled", "op_raw", "rb_raw", "lorcana_raw", "ygo_raw", "scryfall"):
             target = wd / sub
             if target.exists():
                 shutil.rmtree(target, ignore_errors=True)
@@ -1426,12 +1387,14 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             shutil.rmtree(run_dir, ignore_errors=True)
 
     @staticmethod
-    def _create_separator_image(deck_name: str, deck_format: str, cards: list, output_path: Path) -> None:
+    def _create_separator_image(
+        deck_name: str, deck_format: str, cards: list, output_path: Path
+    ) -> None:
         from PIL import Image, ImageDraw, ImageFont
-        
+
         # Standard card size
         w, h = 745, 1040
-        
+
         # 1. Create a beautiful warm charcoal gradient background
         img = Image.new("RGB", (w, h))
         draw_g = ImageDraw.Draw(img)
@@ -1440,11 +1403,11 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             g = int(40 - (40 - 17) * (y / h))
             b = int(34 - (34 - 16) * (y / h))
             draw_g.line([(0, y), (w, y)], fill=(r, g, b))
-            
+
         # Create an RGBA overlay for drawing semi-transparent elements
         overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw_ol = ImageDraw.Draw(overlay)
-        
+
         # Dimensions for plaque
         y0 = 60
         y1 = y0 + 170
@@ -1452,62 +1415,111 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         x0 = 80
         x1 = w - 80
         cx = w // 2
-        
+
         r_plaque = int(w * 0.027)
         r_inner = int(w * 0.020)
-        
+
         # Plaque Shadow
         shadow_offset = int(w * 0.008)
-        shadow_rect = [x0 - 4 + shadow_offset, y0 - 4 + shadow_offset, x1 + 4 + shadow_offset, y1 + 4 + shadow_offset]
+        shadow_rect = [
+            x0 - 4 + shadow_offset,
+            y0 - 4 + shadow_offset,
+            x1 + 4 + shadow_offset,
+            y1 + 4 + shadow_offset,
+        ]
         draw_ol.rounded_rectangle(shadow_rect, radius=r_plaque, fill=(0, 0, 0, 180))
-        
+
         # Main Stone Plaque (rounded rectangle)
-        stone_color = (60, 55, 50, 255) # Dark warm grey slate
-        inner_stone_color = (74, 69, 64, 255) # Slightly lighter stone inner panel
+        stone_color = (60, 55, 50, 255)  # Dark warm grey slate
+        inner_stone_color = (74, 69, 64, 255)  # Slightly lighter stone inner panel
         draw_ol.rounded_rectangle([x0, y0, x1, y1], radius=r_plaque, fill=stone_color)
-        draw_ol.rounded_rectangle([x0 + 8, y0 + 8, x1 - 8, y1 - 8], radius=r_inner, fill=inner_stone_color)
-        
+        draw_ol.rounded_rectangle(
+            [x0 + 8, y0 + 8, x1 - 8, y1 - 8], radius=r_inner, fill=inner_stone_color
+        )
+
         # Metallic Outer Frame (Bronze/Gold border)
         bronze_color = (42, 34, 21, 255)
         gold_color = (197, 165, 96, 255)
         light_gold = (234, 210, 149, 255)
-        
+
         w_outer_bronze = max(2, int(w * 0.008))
         w_outer_gold = max(1, int(w * 0.0027))
         w_inner_bronze = max(1, int(w * 0.0054))
-        
+
         # Draw outer bronze outline
-        draw_ol.rounded_rectangle([x0, y0, x1, y1], radius=r_plaque, outline=bronze_color, width=w_outer_bronze)
+        draw_ol.rounded_rectangle(
+            [x0, y0, x1, y1], radius=r_plaque, outline=bronze_color, width=w_outer_bronze
+        )
         # Draw gold highlight line
-        draw_ol.rounded_rectangle([x0 + 2, y0 + 2, x1 - 2, y1 - 2], radius=r_plaque - 2, outline=gold_color, width=w_outer_gold)
+        draw_ol.rounded_rectangle(
+            [x0 + 2, y0 + 2, x1 - 2, y1 - 2],
+            radius=r_plaque - 2,
+            outline=gold_color,
+            width=w_outer_gold,
+        )
         # Draw inner bronze outline
-        draw_ol.rounded_rectangle([x0 + 8, y0 + 8, x1 - 8, y1 - 8], radius=r_inner, outline=bronze_color, width=w_inner_bronze)
-        
+        draw_ol.rounded_rectangle(
+            [x0 + 8, y0 + 8, x1 - 8, y1 - 8],
+            radius=r_inner,
+            outline=bronze_color,
+            width=w_inner_bronze,
+        )
+
         # Corner curls
         corner_r = int(w * 0.033)
-        draw_ol.arc([x0 - corner_r, y0 - corner_r, x0 + corner_r, y0 + corner_r], 90, 270, fill=gold_color, width=w_outer_gold)
-        draw_ol.arc([x0 - corner_r + 4, y0 - corner_r + 4, x0 + corner_r - 4, y0 + corner_r - 4], 90, 270, fill=bronze_color, width=1)
-        draw_ol.arc([x0 - corner_r, y1 - corner_r, x0 + corner_r, y1 + corner_r], 180, 360, fill=gold_color, width=w_outer_gold)
-        draw_ol.arc([x1 - corner_r, y0 - corner_r, x1 + corner_r, y0 + corner_r], 270, 90, fill=gold_color, width=w_outer_gold)
-        draw_ol.arc([x1 - corner_r, y1 - corner_r, x1 + corner_r, y1 + corner_r], 0, 180, fill=gold_color, width=w_outer_gold)
-        
+        draw_ol.arc(
+            [x0 - corner_r, y0 - corner_r, x0 + corner_r, y0 + corner_r],
+            90,
+            270,
+            fill=gold_color,
+            width=w_outer_gold,
+        )
+        draw_ol.arc(
+            [x0 - corner_r + 4, y0 - corner_r + 4, x0 + corner_r - 4, y0 + corner_r - 4],
+            90,
+            270,
+            fill=bronze_color,
+            width=1,
+        )
+        draw_ol.arc(
+            [x0 - corner_r, y1 - corner_r, x0 + corner_r, y1 + corner_r],
+            180,
+            360,
+            fill=gold_color,
+            width=w_outer_gold,
+        )
+        draw_ol.arc(
+            [x1 - corner_r, y0 - corner_r, x1 + corner_r, y0 + corner_r],
+            270,
+            90,
+            fill=gold_color,
+            width=w_outer_gold,
+        )
+        draw_ol.arc(
+            [x1 - corner_r, y1 - corner_r, x1 + corner_r, y1 + corner_r],
+            0,
+            180,
+            fill=gold_color,
+            width=w_outer_gold,
+        )
+
         # Wavy vine lines
         draw_ol.line([(x0 + 40, y0), (cx - 40, y0)], fill=bronze_color, width=w_inner_bronze)
         draw_ol.line([(cx + 40, y0), (x1 - 40, y0)], fill=bronze_color, width=w_inner_bronze)
         draw_ol.line([(x0 + 40, y1), (cx - 40, y1)], fill=bronze_color, width=w_inner_bronze)
         draw_ol.line([(cx + 40, y1), (x1 - 40, y1)], fill=bronze_color, width=w_inner_bronze)
-        
+
         # Medallions (8 circles in total, matching reference)
         c_white = (243, 230, 199, 255)
-        c_blue  = (80, 115, 169, 255)
+        c_blue = (80, 115, 169, 255)
         c_black = (50, 48, 47, 255)
-        c_red   = (192, 92, 70, 255)
+        c_red = (192, 92, 70, 255)
         c_green = (62, 111, 83, 255)
-        
+
         r1 = int(w * 0.040)
         r2 = int(w * 0.037)
         r3 = int(w * 0.029)
-        
+
         medallions = [
             (x0 - 6, y_center, r1, c_red),
             (x1 + 6, y_center, r1, c_green),
@@ -1518,58 +1530,93 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             (x0 + (cx - x0) // 2, y1 + 3, r3, c_blue),
             (cx + (x1 - cx) // 2, y1 + 3, r3, c_red),
         ]
-        
+
         for mx, my, mr, mcolor in medallions:
             draw_ol.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=bronze_color)
-            draw_ol.ellipse([mx - mr + 3, my - mr + 3, mx + mr - 3, my + mr - 3], outline=gold_color, width=2)
-            draw_ol.ellipse([mx - mr + 6, my - mr + 6, mx + mr - 6, my + mr - 6], fill=(20, 15, 10, 255))
+            draw_ol.ellipse(
+                [mx - mr + 3, my - mr + 3, mx + mr - 3, my + mr - 3], outline=gold_color, width=2
+            )
+            draw_ol.ellipse(
+                [mx - mr + 6, my - mr + 6, mx + mr - 6, my + mr - 6], fill=(20, 15, 10, 255)
+            )
             gem_r = mr - 9
             draw_ol.ellipse([mx - gem_r, my - gem_r, mx + gem_r, my + gem_r], fill=mcolor)
             glint_r = gem_r // 3
             if glint_r > 0:
-                draw_ol.ellipse([mx - glint_r - 2, my - glint_r - 2, mx + glint_r - 2, my + glint_r - 2], fill=(255, 255, 255, 150))
-                
+                draw_ol.ellipse(
+                    [mx - glint_r - 2, my - glint_r - 2, mx + glint_r - 2, my + glint_r - 2],
+                    fill=(255, 255, 255, 150),
+                )
+
         # Composite the frame onto background
         img_composite = Image.alpha_composite(img.convert("RGBA"), overlay)
         img = img_composite.convert("RGB")
         draw = ImageDraw.Draw(img)
-        
+
         # Load fonts
         font_title = None
         font_sub = None
         font_stats_header = None
         font_stats_val = None
-        
+
         title_size = 38
         sub_size = 20
         stats_header_size = 22
         stats_val_size = 26
-        
-        title_font_names = ["/System/Library/Fonts/Supplemental/Georgia Bold.ttf", "Georgia Bold", "Arial Bold"]
-        sub_font_names = ["/System/Library/Fonts/Supplemental/Georgia Italic.ttf", "Georgia Italic", "Arial Italic"]
-        stats_header_names = ["/System/Library/Fonts/Supplemental/Georgia Bold.ttf", "Georgia Bold", "Arial Bold"]
+
+        title_font_names = [
+            "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+            "Georgia Bold",
+            "Arial Bold",
+        ]
+        sub_font_names = [
+            "/System/Library/Fonts/Supplemental/Georgia Italic.ttf",
+            "Georgia Italic",
+            "Arial Italic",
+        ]
+        stats_header_names = [
+            "/System/Library/Fonts/Supplemental/Georgia Bold.ttf",
+            "Georgia Bold",
+            "Arial Bold",
+        ]
         stats_val_names = ["/System/Library/Fonts/Supplemental/Georgia.ttf", "Georgia", "Arial"]
-        
+
         for f_name in title_font_names:
-            try: font_title = ImageFont.truetype(f_name, title_size); break
-            except OSError: continue
-        if font_title is None: font_title = ImageFont.load_default()
-            
+            try:
+                font_title = ImageFont.truetype(f_name, title_size)
+                break
+            except OSError:
+                continue
+        if font_title is None:
+            font_title = ImageFont.load_default()
+
         for f_name in sub_font_names:
-            try: font_sub = ImageFont.truetype(f_name, sub_size); break
-            except OSError: continue
-        if font_sub is None: font_sub = ImageFont.load_default()
-            
+            try:
+                font_sub = ImageFont.truetype(f_name, sub_size)
+                break
+            except OSError:
+                continue
+        if font_sub is None:
+            font_sub = ImageFont.load_default()
+
         for f_name in stats_header_names:
-            try: font_stats_header = ImageFont.truetype(f_name, stats_header_size); break
-            except OSError: continue
-        if font_stats_header is None: font_stats_header = ImageFont.load_default()
-            
+            try:
+                font_stats_header = ImageFont.truetype(f_name, stats_header_size)
+                break
+            except OSError:
+                continue
+        if font_stats_header is None:
+            font_stats_header = ImageFont.load_default()
+
         for f_name in stats_val_names:
-            try: font_stats_val = ImageFont.truetype(f_name, stats_val_size); break
-            except OSError: continue
-        if font_stats_val is None: font_stats_val = ImageFont.load_default()
-            
+            try:
+                font_stats_val = ImageFont.truetype(f_name, stats_val_size)
+                break
+            except OSError:
+                continue
+        if font_stats_val is None:
+            font_stats_val = ImageFont.load_default()
+
         # Draw Title (Deck Name)
         title_text = deck_name.upper()
         max_title_w = (x1 - x0) - 40
@@ -1586,9 +1633,12 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 break
             title_size -= 2
             for f_name in title_font_names:
-                try: font_title = ImageFont.truetype(f_name, title_size); break
-                except OSError: continue
-                
+                try:
+                    font_title = ImageFont.truetype(f_name, title_size)
+                    break
+                except OSError:
+                    continue
+
         try:
             bbox_t = draw.textbbox((0, 0), title_text, font=font_title)
             tw = bbox_t[2] - bbox_t[0]
@@ -1597,7 +1647,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         except AttributeError:
             tw, th = draw.textsize(title_text, font=font_title)
             y_offset_t = 0
-            
+
         # Translate and draw format subtitle
         FORMAT_TRANSLATION = {
             "commander": "Commander",
@@ -1607,11 +1657,11 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             "legacy": "Legacy",
             "vintage": "Vintage",
             "pioneer": "Pioneer",
-            "cedh": "cEDH"
+            "cedh": "cEDH",
         }
         fmt_pretty = FORMAT_TRANSLATION.get(deck_format.lower(), deck_format.title())
         sub_text = f"Mazo de {fmt_pretty}"
-        
+
         try:
             bbox_s = draw.textbbox((0, 0), sub_text, font=font_sub)
             sw = bbox_s[2] - bbox_s[0]
@@ -1620,12 +1670,12 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         except AttributeError:
             sw, sh = draw.textsize(sub_text, font=font_sub)
             y_offset_s = 0
-            
+
         tx = (w - tw) // 2
         ty = y_center - th - 5 - y_offset_t
         sx = (w - sw) // 2
         sy = y_center + 10 - y_offset_s
-        
+
         # Title Shadow
         draw.text((tx + 2, ty + 2), title_text, fill=(0, 0, 0), font=font_title)
         draw.text((tx - 1, ty - 1), title_text, fill=(0, 0, 0), font=font_title)
@@ -1633,23 +1683,35 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
         draw.text((tx - 1, ty + 1), title_text, fill=(0, 0, 0), font=font_title)
         draw.text((tx + 1, ty + 1), title_text, fill=(0, 0, 0), font=font_title)
         draw.text((tx, ty), title_text, fill=light_gold[:3], font=font_title)
-        
+
         # Subtitle Shadow
         draw.text((sx + 1, sy + 1), sub_text, fill=(0, 0, 0), font=font_sub)
         draw.text((sx, sy), sub_text, fill=(218, 203, 169), font=font_sub)
-        
+
         # Stats & Commanders
         mainboard_cards = [c for c in cards if c.zone == "main"]
         commanders = [c for c in cards if getattr(c, "is_commander", False)]
-        
-        num_creatures = sum(c.quantity for c in mainboard_cards if "creature" in getattr(c, "type_line", "").lower())
-        num_lands = sum(c.quantity for c in mainboard_cards if "land" in getattr(c, "type_line", "").lower())
-        num_instants = sum(c.quantity for c in mainboard_cards if "instant" in getattr(c, "type_line", "").lower())
-        num_sorceries = sum(c.quantity for c in mainboard_cards if "sorcery" in getattr(c, "type_line", "").lower())
-        num_enchantments = sum(c.quantity for c in mainboard_cards if "enchantment" in getattr(c, "type_line", "").lower())
-        
+
+        num_creatures = sum(
+            c.quantity for c in mainboard_cards if "creature" in getattr(c, "type_line", "").lower()
+        )
+        num_lands = sum(
+            c.quantity for c in mainboard_cards if "land" in getattr(c, "type_line", "").lower()
+        )
+        num_instants = sum(
+            c.quantity for c in mainboard_cards if "instant" in getattr(c, "type_line", "").lower()
+        )
+        num_sorceries = sum(
+            c.quantity for c in mainboard_cards if "sorcery" in getattr(c, "type_line", "").lower()
+        )
+        num_enchantments = sum(
+            c.quantity
+            for c in mainboard_cards
+            if "enchantment" in getattr(c, "type_line", "").lower()
+        )
+
         y_cursor = y1 + 90
-        
+
         is_commander_format = (deck_format.lower() in ["commander", "cedh"]) or len(commanders) > 0
         if is_commander_format and commanders:
             header_text = "COMANDANTE(S)" if len(commanders) > 1 else "COMANDANTE"
@@ -1659,12 +1721,12 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 hh = bbox_h[3] - bbox_h[1]
             except AttributeError:
                 hw, hh = draw.textsize(header_text, font=font_stats_header)
-                
+
             hx = (w - hw) // 2
             draw.text((hx + 1, y_cursor + 1), header_text, fill=(0, 0, 0), font=font_stats_header)
             draw.text((hx, y_cursor), header_text, fill=light_gold[:3], font=font_stats_header)
             y_cursor += hh + 15
-            
+
             for comm in commanders:
                 c_name = comm.name
                 try:
@@ -1673,18 +1735,25 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     nh = bbox_n[3] - bbox_n[1]
                 except AttributeError:
                     nw, nh = draw.textsize(c_name, font=font_sub)
-                    
+
                 nx = (w - nw) // 2
                 draw.text((nx + 1, y_cursor + 1), c_name, fill=(0, 0, 0), font=font_sub)
                 draw.text((nx, y_cursor), c_name, fill=(255, 255, 255), font=font_sub)
                 y_cursor += nh + 10
-                
+
             y_cursor += 15
             sep_w = 260
-            draw.line([(cx - sep_w // 2, y_cursor), (cx + sep_w // 2, y_cursor)], fill=gold_color[:3], width=2)
-            draw.polygon([(cx - 6, y_cursor), (cx, y_cursor - 6), (cx + 6, y_cursor), (cx, y_cursor + 6)], fill=gold_color[:3])
+            draw.line(
+                [(cx - sep_w // 2, y_cursor), (cx + sep_w // 2, y_cursor)],
+                fill=gold_color[:3],
+                width=2,
+            )
+            draw.polygon(
+                [(cx - 6, y_cursor), (cx, y_cursor - 6), (cx + 6, y_cursor), (cx, y_cursor + 6)],
+                fill=gold_color[:3],
+            )
             y_cursor += 35
-            
+
         stats_header = "ESTADÍSTICAS DEL MAZO"
         try:
             bbox_sh = draw.textbbox((0, 0), stats_header, font=font_stats_header)
@@ -1692,20 +1761,20 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             shh = bbox_sh[3] - bbox_sh[1]
         except AttributeError:
             shw, shh = draw.textsize(stats_header, font=font_stats_header)
-            
+
         shx = (w - shw) // 2
         draw.text((shx + 1, y_cursor + 1), stats_header, fill=(0, 0, 0), font=font_stats_header)
         draw.text((shx, y_cursor), stats_header, fill=light_gold[:3], font=font_stats_header)
         y_cursor += shh + 30
-        
+
         stats = [
             ("Criaturas", num_creatures),
             ("Tierras", num_lands),
             ("Instantáneos", num_instants),
             ("Conjuros", num_sorceries),
-            ("Encantamientos", num_enchantments)
+            ("Encantamientos", num_enchantments),
         ]
-        
+
         for label, val in stats:
             stat_text = f"{label}: {val}"
             try:
@@ -1714,24 +1783,28 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                 vh = bbox_v[3] - bbox_v[1]
             except AttributeError:
                 vw, vh = draw.textsize(stat_text, font=font_stats_val)
-                
+
             vx = (w - vw) // 2
             draw.text((vx + 1, y_cursor + 1), stat_text, fill=(0, 0, 0), font=font_stats_val)
             draw.text((vx, y_cursor), stat_text, fill=(240, 235, 225), font=font_stats_val)
             y_cursor += vh + 15
-            
+
         y_cursor += 20
         sep_w = 160
-        draw.line([(cx - sep_w // 2, y_cursor), (cx + sep_w // 2, y_cursor)], fill=bronze_color[:3], width=2)
+        draw.line(
+            [(cx - sep_w // 2, y_cursor), (cx + sep_w // 2, y_cursor)],
+            fill=bronze_color[:3],
+            width=2,
+        )
         draw.ellipse([cx - 4, y_cursor - 4, cx + 4, y_cursor + 4], fill=gold_color[:3])
-        
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
         img.save(output_path, "JPEG", quality=95)
 
     def _drain_events(self) -> None:
         try:
             while True:
-                ev = self.events.get_nowait()
+                ev = normalize_event(self.events.get_nowait())
                 self._handle(ev)
         except queue.Empty:
             pass
@@ -1803,7 +1876,9 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             extra = f" Resumen en {manifest.name}." if manifest else ""
             status_text = f"Listo. {len(pdfs)} PDF(s) generados en {run_dir.name}.{extra}"
             if skipped_tokens_count > 0:
-                status_text += f" (Aviso: {skipped_tokens_count} token(s) omitidos por layout no válido)"
+                status_text += (
+                    f" (Aviso: {skipped_tokens_count} token(s) omitidos por layout no válido)"
+                )
             self.status_var.set(status_text)
             if timing_str:
                 self.timing_var.set(f"Tiempos — {timing_str}")
@@ -1934,6 +2009,20 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
             self._lorcana_status_var.set("Error al cargar el mazo.")
             self._lorcana_load_btn.state(["!disabled"])
             self._show_error_dialog(msg)
+        elif kind == "ygo_deck_loaded":
+            _, deck = ev
+            if not any(d.deck_id == deck.deck_id for d in self._ygo_decks):
+                self._ygo_decks.append(deck)
+                self._ygo_refresh_rows()
+                self._refresh_generate_state()
+            self._ygo_url_var.set("")
+            self._ygo_status_var.set(f"Añadido: {deck.name}")
+            self._ygo_load_btn.state(["!disabled"])
+        elif kind == "ygo_deck_error":
+            _, msg = ev
+            self._ygo_status_var.set("Error al cargar el mazo.")
+            self._ygo_load_btn.state(["!disabled"])
+            self._show_error_dialog(msg)
         elif kind == "mtg_url_loaded":
             _, url, cards, include_side, deck_name, deck_format = ev
             self.state.mtg_url_decks.append(
@@ -1944,7 +2033,7 @@ class App(XmlTabMixin, OPTabMixin, RBTabMixin, LorcanaTabMixin, LocalsTabMixin, 
                     include_tokens=self._settings.scryfall_download_tokens,
                     name=deck_name,
                     format=deck_format,
-                    include_separator=self._settings.scryfall_deck_separators
+                    include_separator=self._settings.scryfall_deck_separators,
                 )
             )
             dlg = getattr(self, "_mtg_url_dialog", None)

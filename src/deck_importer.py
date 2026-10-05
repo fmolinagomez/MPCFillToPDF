@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import html as _html
 import json as _json
+import logging
 import re
 from dataclasses import dataclass
 
 import requests
+
+from src.http_client import get as http_get
+
+_log = logging.getLogger(__name__)
 
 _HEADERS = {
     "User-Agent": (
@@ -37,6 +42,7 @@ _MANABOX_SIDE_CATS = frozenset({1})  # boardCategory 1 = sideboard
 
 _TAPPEDOUT_MAIN_RE = re.compile(r"^(\d+)\s+(.+)$")
 _TAPPEDOUT_SIDE_RE = re.compile(r"^SB:\s*(\d+)\s+(.+)$")
+_TAPPEDOUT_TOKENS_RE = re.compile(r"\bTokens\s*\|\s*([^\n<]+)", re.IGNORECASE)
 
 
 class DeckImportError(Exception):
@@ -51,7 +57,8 @@ class DeckCard:
     set_code: str
     collector_number: str
     quantity: int
-    zone: str  # "main" | "side"
+    zone: str  # "main" | "side" | "token"
+    scryfall_id: str = ""
     is_commander: bool = False
     type_line: str = ""
     layout: str = ""
@@ -91,7 +98,7 @@ def fetch_deck(url: str) -> FetchedDeck:
 def _fetch_moxfield(deck_id: str) -> FetchedDeck:
     url = _MOXFIELD_API.format(deck_id=deck_id)
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+        resp = http_get(url, headers=_HEADERS, timeout=_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
@@ -117,27 +124,26 @@ def _fetch_moxfield(deck_id: str) -> FetchedDeck:
             type_line = card.get("type_line", "")
             if not set_code or not collector_number:
                 continue
-            is_commander = (board_name == "commanders")
-            cards.append(DeckCard(name, set_code, collector_number, qty, zone, is_commander=is_commander, type_line=type_line))
-
-    # Parse tokens from Moxfield JSON response
-    for token_card in data.get("tokens", []):
-        set_code = str(token_card.get("set", "")).lower()
-        collector_number = str(token_card.get("cn", ""))
-        name = token_card.get("name", "")
-        qty = int(token_card.get("quantity") or 1)
-        type_line = token_card.get("type_line", "") or "Token"
-        if not set_code or not collector_number:
-            continue
-        cards.append(DeckCard(name, set_code, collector_number, qty, "token", type_line=type_line))
-
+            is_commander = board_name == "commanders"
+            cards.append(
+                DeckCard(
+                    name,
+                    set_code,
+                    collector_number,
+                    qty,
+                    zone,
+                    is_commander=is_commander,
+                    type_line=type_line,
+                )
+            )
+    cards.extend(_extract_token_cards(data.get("tokens", [])))
     return FetchedDeck(name=deck_name, cards=cards, format=deck_format, raw_json=data)
 
 
 def _fetch_archidekt(deck_id: str) -> FetchedDeck:
     url = _ARCHIDEKT_API.format(deck_id=deck_id)
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+        resp = http_get(url, headers=_HEADERS, timeout=_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
@@ -146,6 +152,7 @@ def _fetch_archidekt(deck_id: str) -> FetchedDeck:
     deck_name: str = data.get("name", "")
     deck_format: str = data.get("deckFormat", "commander")
     cards: list[DeckCard] = []
+    token_source_ids: list[str] = []
     for entry in data.get("cards", []):
         categories = entry.get("categories", [])
         if any(c in _ARCHIDEKT_SKIP_CATEGORIES for c in categories):
@@ -158,24 +165,40 @@ def _fetch_archidekt(deck_id: str) -> FetchedDeck:
         name = oracle_card.get("name", "")
         qty = int(entry.get("quantity", 1))
         zone = "side" if any(c in _ARCHIDEKT_SIDE_CATEGORIES for c in categories) else "main"
-        
         type_line = oracle_card.get("type", "")
         if not type_line and "types" in oracle_card:
             types_list = oracle_card.get("types", [])
             if isinstance(types_list, list):
                 type_line = " ".join(types_list)
-                
-        if not set_code or not collector_number:
+
+        if not name:
             continue
         is_commander = "Commander" in categories
-        cards.append(DeckCard(name, set_code, collector_number, qty, zone, is_commander=is_commander, type_line=type_line))
+        cards.append(
+            DeckCard(
+                name,
+                set_code,
+                collector_number,
+                qty,
+                zone,
+                is_commander=is_commander,
+                type_line=type_line,
+            )
+        )
+        if card_data.get("oracleCard", {}).get("tokens"):
+            token_source_ids.append(str(card_data.get("uid", "")))
+    cards.extend(_extract_token_cards(data.get("tokens", [])))
+    if token_source_ids:
+        from src.scryfall import fetch_related_tokens
+
+        cards.extend(fetch_related_tokens(token_source_ids))
     return FetchedDeck(name=deck_name, cards=cards, format=deck_format)
 
 
 def _fetch_deckstats(owner_id: str, deck_id: str) -> FetchedDeck:
     url = _DECKSTATS_API.format(owner_id=owner_id, deck_id=deck_id)
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+        resp = http_get(url, headers=_HEADERS, timeout=_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
@@ -202,7 +225,7 @@ def _fetch_deckstats(owner_id: str, deck_id: str) -> FetchedDeck:
 def _fetch_tappedout(slug: str) -> FetchedDeck:
     url = _TAPPEDOUT_API.format(slug=slug)
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+        resp = http_get(url, headers=_HEADERS, timeout=_TIMEOUT)
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise DeckImportError(f"Error al acceder a TappedOut: {exc}", "tappedout") from exc
@@ -218,15 +241,92 @@ def _fetch_tappedout(slug: str) -> FetchedDeck:
             line = line.replace("*CMDR*", "").strip()
         m = _TAPPEDOUT_SIDE_RE.match(line)
         if m:
-            cards.append(DeckCard(m.group(2).strip(), "", "", int(m.group(1)), "side", is_commander=is_commander))
+            cards.append(
+                DeckCard(
+                    m.group(2).strip(), "", "", int(m.group(1)), "side", is_commander=is_commander
+                )
+            )
             continue
         m = _TAPPEDOUT_MAIN_RE.match(line)
         if m:
-            cards.append(DeckCard(m.group(2).strip(), "", "", int(m.group(1)), "main", is_commander=is_commander))
+            cards.append(
+                DeckCard(
+                    m.group(2).strip(), "", "", int(m.group(1)), "main", is_commander=is_commander
+                )
+            )
 
     if not cards:
         raise DeckImportError("No se encontraron cartas en el mazo de TappedOut", "tappedout")
+    cards.extend(_fetch_tappedout_tokens(slug))
     return FetchedDeck(name=deck_name, cards=cards)
+
+
+def _extract_token_cards(raw_tokens: object) -> list[DeckCard]:
+    """Return one printable card for each distinct token supplied by a deck API."""
+    if isinstance(raw_tokens, dict):
+        entries = raw_tokens.values()
+    elif isinstance(raw_tokens, list):
+        entries = raw_tokens
+    else:
+        return []
+
+    cards: list[DeckCard] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        card = entry.get("card", entry)
+        if not isinstance(card, dict):
+            continue
+        oracle_card = card.get("oracleCard", {})
+        name = str(card.get("name", oracle_card.get("name", "")))
+        edition = card.get("edition", {})
+        set_code = str(card.get("set", card.get("setCode", edition.get("editioncode", "")))).lower()
+        collector_number = str(
+            card.get("cn", card.get("collectorNumber", card.get("collector_number", "")))
+        )
+        type_line = str(card.get("type_line", oracle_card.get("type", ""))) or "Token"
+        layout = str(card.get("layout", ""))
+        qty = int(card.get("quantity") or entry.get("quantity") or 1)
+        key = (name.casefold(), set_code, collector_number)
+        if name and key not in seen:
+            seen.add(key)
+            cards.append(
+                DeckCard(
+                    name,
+                    set_code,
+                    collector_number,
+                    qty,
+                    "token",
+                    type_line=type_line,
+                    layout=layout,
+                )
+            )
+    return cards
+
+
+def _fetch_tappedout_tokens(slug: str) -> list[DeckCard]:
+    """Read TappedOut's generated-token summary without failing the deck import."""
+    try:
+        resp = http_get(
+            f"https://tappedout.net/mtg-decks/{slug}/", headers=_HEADERS, timeout=_TIMEOUT
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        _log.warning("No se pudieron leer los tokens de TappedOut: %s", exc)
+        return []
+
+    text = _html.unescape(resp.text)
+    match = _TAPPEDOUT_TOKENS_RE.search(text)
+    if not match:
+        return []
+    names = (name.strip() for name in match.group(1).split(","))
+    return [DeckCard(_tappedout_token_name(name), "", "", 1, "token") for name in names if name]
+
+
+def _tappedout_token_name(label: str) -> str:
+    """Remove TappedOut's power/toughness/color suffix before Scryfall name lookup."""
+    return re.sub(r"\s+\d+/\d+\s+[WUBRGC]+$", "", label).strip()
 
 
 def _astro_val(wrapped: object) -> object:
@@ -280,7 +380,7 @@ def _manabox_extract_props(raw: str) -> str:
 def _fetch_manabox(deck_id: str) -> FetchedDeck:
     url = f"https://manabox.app/decks/{deck_id}"
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+        resp = http_get(url, headers=_HEADERS, timeout=_TIMEOUT)
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise DeckImportError(f"Error al acceder a Manabox: {exc}", "manabox") from exc
@@ -312,6 +412,8 @@ def _fetch_manabox(deck_id: str) -> FetchedDeck:
         type_line = str(_astro_val(entry.get("typeLine", ""))) or ""
         if not name:
             continue
-        cards.append(DeckCard(name, set_code, collector_number, quantity, zone, type_line=type_line))
+        cards.append(
+            DeckCard(name, set_code, collector_number, quantity, zone, type_line=type_line)
+        )
 
     return FetchedDeck(name=deck_name, cards=cards)

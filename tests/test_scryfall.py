@@ -9,6 +9,7 @@ from src.scryfall import (
     download_deck_images,
     fetch_card,
     fetch_card_by_name,
+    fetch_related_tokens,
 )
 
 _NORMAL_CARD_JSON = {
@@ -101,6 +102,33 @@ class TestFetchCardCaching:
             fetch_card("ltr", "10")
             fetch_card("m21", "10")
         assert mock_get.call_count == 2
+
+
+class TestFetchRelatedTokens:
+    def test_includes_token_extras_from_the_same_scryfall_relation(self):
+        source = {
+            "all_parts": [
+                {
+                    "component": "token",
+                    "id": "token-id",
+                    "name": "Soldier",
+                    "type_line": "Token Creature — Soldier",
+                },
+                {
+                    "component": "token",
+                    "id": "emblem-id",
+                    "name": "Elspeth Emblem",
+                    "type_line": "Emblem — Elspeth",
+                },
+                {"component": "combo_piece", "id": "other-id", "name": "Not included"},
+            ]
+        }
+        with patch("src.scryfall._throttled_get", return_value=_mock_resp(source)):
+            tokens = fetch_related_tokens(["source-id"])
+        assert [(card.name, card.scryfall_id) for card in tokens] == [
+            ("Soldier", "token-id"),
+            ("Elspeth Emblem", "emblem-id"),
+        ]
 
 
 class TestDownloadCardImages:
@@ -257,6 +285,27 @@ class TestDownloadCardImagesNameResolution:
         assert front.exists()
         assert back is None
 
+    def test_retries_by_name_when_the_source_printing_is_missing(self, tmp_path):
+        card = DeckCard("Rahilda, Wanted Cutthroat", "vow", "A-63", 1, "main")
+        with (
+            patch(
+                "src.scryfall.fetch_card",
+                side_effect=[
+                    ScryfallError("missing printing"),
+                    ScryfallCard("https://example.com/img.jpg", None),
+                ],
+            ) as mock_card,
+            patch("src.scryfall.fetch_card_by_name", return_value=("vow", "63")) as mock_name,
+            patch("src.scryfall._throttled_get", return_value=_mock_resp(_NORMAL_CARD_JSON)),
+        ):
+            from src.scryfall import download_card_images
+
+            front, back = download_card_images(card, tmp_path)
+        assert mock_card.call_args_list[1].args == ("vow", "63")
+        mock_name.assert_called_once_with("Rahilda, Wanted Cutthroat")
+        assert front.exists()
+        assert back is None
+
     def test_skips_name_resolution_when_set_and_number_present(self, tmp_path):
         card = DeckCard("Lightning Bolt", "ltr", "152", 1, "main")
         with (
@@ -276,6 +325,7 @@ class TestDownloadCardImagesNameResolution:
 class TestFetchCardLanguageAndQuality:
     def setup_method(self):
         import src.scryfall as sf
+
         sf._cache.clear()
 
     def test_fetch_card_png_quality(self):
@@ -285,7 +335,7 @@ class TestFetchCardLanguageAndQuality:
                 "png": "https://cards.scryfall.io/png/front/0/0/abc.png",
             }
         }
-        with patch("src.scryfall._throttled_get", return_value=_mock_resp(json_data)) as mock_get:
+        with patch("src.scryfall._throttled_get", return_value=_mock_resp(json_data)):
             card = fetch_card("ltr", "152", quality="png")
         assert card.front_url == "https://cards.scryfall.io/png/front/0/0/abc.png"
 
@@ -302,6 +352,7 @@ class TestFetchCardLanguageAndQuality:
 
     def test_fetch_card_spanish_missing_fallback_english(self):
         import requests as req
+
         err_404 = req.HTTPError(response=MagicMock(status_code=404))
 
         def side_effect(url, params=None):
@@ -317,13 +368,14 @@ class TestFetchCardLanguageAndQuality:
 
     def test_fetch_card_spanish_missing_fallback_alternative_found(self):
         import requests as req
+
         err_404 = req.HTTPError(response=MagicMock(status_code=404))
 
         en_json = {
             "oracle_id": "dummy-uuid",
             "image_uris": {
                 "large": "https://cards.scryfall.io/large/front/0/0/en.jpg",
-            }
+            },
         }
         search_json = {
             "data": [
@@ -352,17 +404,16 @@ class TestFetchCardLanguageAndQuality:
 
     def test_fetch_card_spanish_missing_fallback_alternative_not_found(self):
         import requests as req
+
         err_404 = req.HTTPError(response=MagicMock(status_code=404))
 
         en_json = {
             "oracle_id": "dummy-uuid",
             "image_uris": {
                 "large": "https://cards.scryfall.io/large/front/0/0/en.jpg",
-            }
+            },
         }
-        search_json = {
-            "data": []
-        }
+        search_json = {"data": []}
 
         def side_effect(url, params=None):
             if "/es" in url:
@@ -372,7 +423,7 @@ class TestFetchCardLanguageAndQuality:
             else:
                 return _mock_resp(en_json)
 
-        with patch("src.scryfall._throttled_get", side_effect=side_effect) as mock_get:
+        with patch("src.scryfall._throttled_get", side_effect=side_effect):
             card = fetch_card("ltr", "152", lang="es", fail_policy="alternative")
 
         assert card.front_url == "https://cards.scryfall.io/large/front/0/0/en.jpg"
@@ -387,8 +438,11 @@ class TestFetchCardLanguageAndQuality:
             patch("src.scryfall._throttled_get", return_value=_mock_resp(_NORMAL_CARD_JSON)),
         ):
             from src.scryfall import download_card_images
-            front, back = download_card_images(card, tmp_path, lang="es", quality="png", quality_check=False)
-            
+
+            front, back = download_card_images(
+                card, tmp_path, lang="es", quality="png", quality_check=False
+            )
+
         assert front.name == "ltr_152_es_png.jpg"
 
 
@@ -397,7 +451,7 @@ class TestScryfallQualityChecks:
         from PIL import Image, ImageDraw
 
         from src.quality import check_image_quality
-        
+
         # 1. Create a sharp image (high contrast edges) of size 800x1120 (meets resolution threshold)
         sharp_img = Image.new("RGB", (800, 1120), color="white")
         draw = ImageDraw.Draw(sharp_img)
@@ -405,59 +459,66 @@ class TestScryfallQualityChecks:
         for i in range(0, 800, 20):
             draw.line([(i, 0), (i, 1120)], fill="black", width=5)
             draw.line([(0, i), (800, i)], fill="black", width=5)
-        
+
         sharp_path = tmp_path / "sharp.png"
         sharp_img.save(sharp_path)
-        
+
         # 2. Create a blurry image by applying a strong blur to the same pattern
         from PIL import ImageFilter
+
         blurry_img = sharp_img.filter(ImageFilter.GaussianBlur(radius=10))
         blurry_path = tmp_path / "blurry.png"
         blurry_img.save(blurry_path)
-        
+
         # 3. Create a low resolution image (e.g. 100x140)
         low_res_img = sharp_img.resize((100, 140))
         low_res_path = tmp_path / "low_res.png"
         low_res_img.save(low_res_path)
-        
+
         # Run quality checks
         # Let's check with threshold 50.0
         ok_sharp, score_sharp, dims_sharp = check_image_quality(sharp_path, 50.0)
         ok_blurry, score_blurry, dims_blurry = check_image_quality(blurry_path, 50.0)
         ok_low_res, score_low_res, dims_low_res = check_image_quality(low_res_path, 50.0)
-        
+
         assert dims_sharp == (800, 1120)
         assert dims_blurry == (800, 1120)
         assert dims_low_res == (100, 140)
-        
+
         # Sharp image should pass resolution and focus score checks
         assert ok_sharp is True
         assert score_sharp > 50.0
-        
+
         # Blurry image should fail focus check
         assert ok_blurry is False
         assert score_blurry < 10.0
-        
+
         # Low res image should fail resolution check
         assert ok_low_res is False
 
     def test_download_card_images_fallback_flow(self, tmp_path):
         from src.scryfall import download_card_images
+
         card = DeckCard("Dummy Card", "ltr", "152", 1, "main")
-        
+
         # Mock fetch_card to return different ScryfallCards based on requested language
         def mock_fetch_card(s_code, col_num, lang="en", quality="large", fail_policy="english"):
             if lang == "es":
-                return ScryfallCard("https://example.com/orig_es.jpg", None, oracle_id="oracle-id-123")
+                return ScryfallCard(
+                    "https://example.com/orig_es.jpg", None, oracle_id="oracle-id-123"
+                )
             else:
-                return ScryfallCard("https://example.com/orig_en.jpg", None, oracle_id="oracle-id-123")
-        
+                return ScryfallCard(
+                    "https://example.com/orig_en.jpg", None, oracle_id="oracle-id-123"
+                )
+
         # Mock _throttled_get to return status 200 for mock downloads
         def mock_get(url, params=None):
             return _mock_resp({}, status=200)
 
         # Mock check image quality: Spanish fails, English passes!
         qualities_returned = []
+
         def mock_check_quality(image_path, threshold, bc_check=True):
             qualities_returned.append(image_path.name)
             if "orig_es" in image_path.name or "_es_" in image_path.name:
@@ -474,7 +535,7 @@ class TestScryfallQualityChecks:
             front_path, back_path = download_card_images(
                 card, tmp_path, lang="es", quality="large", quality_check=True, blur_threshold=100.0
             )
-            
+
         # Should have downloaded English original fallback print and returned its path
         assert "en_large" in front_path.name
         # The quality check was run on Spanish first, then English
@@ -485,15 +546,19 @@ class TestScryfallQualityChecks:
 class TestTokenLayoutFiltering:
     def setup_method(self):
         import src.scryfall as sf
+
         sf._cache.clear()
 
     def test_download_token_with_valid_layout(self, tmp_path):
         from src.scryfall import download_card_images
+
         card = DeckCard("Zombie Token", "unf", "1", 1, "token")
-        
+
         # A token card returning a valid layout
-        mock_scryfall = ScryfallCard("https://example.com/zombie.jpg", None, "oracle-id-zombie", "token")
-        
+        mock_scryfall = ScryfallCard(
+            "https://example.com/zombie.jpg", None, "oracle-id-zombie", "token"
+        )
+
         # Mock responses and image check
         with (
             patch("src.scryfall.fetch_card", return_value=mock_scryfall),
@@ -501,32 +566,36 @@ class TestTokenLayoutFiltering:
             patch("src.scryfall.check_image_quality", return_value=(True, 150.0, (800, 1120))),
         ):
             f_path, b_path = download_card_images(card, tmp_path, quality_check=True)
-            
+
         assert f_path is not None
         assert "unf_1_en_large" in f_path.name
 
     def test_download_token_with_invalid_layout_returns_none(self, tmp_path):
         from src.scryfall import download_card_images
+
         card = DeckCard("Zombie Token", "unf", "1", 1, "token")
-        
+
         # A token card returning an invalid layout (e.g. normal)
-        mock_scryfall = ScryfallCard("https://example.com/zombie.jpg", None, "oracle-id-zombie", "normal")
-        
+        mock_scryfall = ScryfallCard(
+            "https://example.com/zombie.jpg", None, "oracle-id-zombie", "normal"
+        )
+
         with patch("src.scryfall.fetch_card", return_value=mock_scryfall):
             f_path, b_path = download_card_images(card, tmp_path)
-            
+
         assert f_path is None
         assert b_path is None
 
     def test_download_deck_images_filters_out_invalid_layout_tokens(self, tmp_path):
         from src.scryfall import download_deck_images
+
         cards = [
             DeckCard("Valid Token", "unf", "1", 1, "token"),
             DeckCard("Invalid Token", "unf", "2", 1, "token"),
             DeckCard("Emblem Token", "unf", "3", 1, "token"),
             DeckCard("Double Faced Token", "unf", "4", 1, "token"),
         ]
-        
+
         def mock_fetch_card(set_code, col_num, **kwargs):
             if col_num == "1":
                 return ScryfallCard("https://example.com/1.jpg", None, "oracle-1", "token")
@@ -535,7 +604,9 @@ class TestTokenLayoutFiltering:
             elif col_num == "3":
                 return ScryfallCard("https://example.com/3.jpg", None, "oracle-3", "emblem")
             else:
-                return ScryfallCard("https://example.com/4.jpg", None, "oracle-4", "double_faced_token")
+                return ScryfallCard(
+                    "https://example.com/4.jpg", None, "oracle-4", "double_faced_token"
+                )
 
         with (
             patch("src.scryfall.fetch_card", side_effect=mock_fetch_card),
@@ -543,7 +614,7 @@ class TestTokenLayoutFiltering:
             patch("src.scryfall.check_image_quality", return_value=(True, 150.0, (800, 1120))),
         ):
             results = download_deck_images(cards, tmp_path, quality_check=False)
-            
+
         assert len(results) == 3
         # Only Valid Token, Emblem Token, and Double Faced Token should remain
         assert results[0][0].name == "Valid Token"

@@ -3,19 +3,10 @@
 from __future__ import annotations
 
 import threading
-import time
 import tkinter as tk
-import traceback
-from datetime import datetime
-from pathlib import Path
 from tkinter import messagebox, ttk
 
-from gui.paths import work_dir
 from gui.widgets import APP_TITLE, attach_context_menu, ellipsize
-from src.pipeline import run_locals_only
-from src.rb_scraper import download_images as rb_download
-from src.rb_scraper import expand_deck as rb_expand
-from src.rb_scraper import get_rb_backs
 from src.rb_scraper import scrape_deck as rb_scrape_deck
 
 _SECTION_LABELS = {
@@ -168,6 +159,14 @@ class RBTabMixin:
             ).grid(row=0, column=5)
 
             detail = ttk.Frame(outer)
+            selected_ids = getattr(
+                deck, "selected_card_ids", {card.variant_id for card in deck.cards}
+            )
+            card_vars: dict[str, tk.BooleanVar] = {}
+
+            def _sync_selection(d=deck, vars=card_vars) -> None:
+                d.selected_card_ids = {card_id for card_id, var in vars.items() if var.get()}
+                self._refresh_generate_state()
 
             for section, cards in by_sec.items():
                 if not cards:
@@ -180,9 +179,15 @@ class RBTabMixin:
                     font=("Segoe UI", 8, "italic"),
                     padding=(12, 2, 0, 0),
                 ).pack(anchor="w")
-                for card in cards:
+                for card in sorted(cards, key=lambda c: c.name.casefold()):
                     row_f = ttk.Frame(detail)
                     row_f.pack(fill=tk.X, pady=0, padx=(12, 4))
+                    card_vars[card.variant_id] = tk.BooleanVar(
+                        value=card.variant_id in selected_ids
+                    )
+                    ttk.Checkbutton(
+                        row_f, variable=card_vars[card.variant_id], command=_sync_selection
+                    ).pack(side=tk.LEFT, padx=(0, 2))
                     ttk.Label(
                         row_f,
                         text=f"x{card.quantity}",
@@ -246,134 +251,3 @@ class RBTabMixin:
         self._rb_load_btn.state(["!disabled"])
         self._rb_refresh_rows()
         self._refresh_generate_state()
-
-    def _start_rb(self, fronts_only: bool = False) -> None:
-        print_runes_flags = [row["print_runes_var"].get() for row in self._rb_deck_rows]
-        self.running = True
-        self.cancel_event.clear()
-        self._dl_speed_str = ""
-        self.timing_var.set("")
-        self.soriano_btn.state(["disabled"])
-        self.fronts_only_btn.state(["disabled"])
-        self.stop_btn.state(["!disabled"])
-        self.stop_btn.pack(fill=tk.X, pady=(4, 0), after=self.fronts_only_btn)
-        self.progress["value"] = 0
-        self.status_var.set("Preparando Riftbound…")
-        self.worker = threading.Thread(
-            target=self._work_rb,
-            args=(fronts_only, print_runes_flags),
-            daemon=True,
-        )
-        self.worker.start()
-
-    def _work_rb(
-        self, fronts_only: bool = False, print_runes_flags: list[bool] | None = None
-    ) -> None:
-        run_dir = None
-        try:
-            decks = self._rb_decks
-            if not decks:
-                raise ValueError("No hay mazos de Riftbound cargados.")
-
-            out = self._effective_output_dir()
-            wd = work_dir()
-            run_dir = out / datetime.now().strftime("%d_%m_%Y_%H-%M-%S")
-            run_dir.mkdir(parents=True, exist_ok=True)
-
-            _run_start = time.time()
-            label = " + ".join(d.name for d in decks)
-
-            rb_raw_dir = wd / "rb_raw"
-            total_unique = sum(len({c.variant_id for c in d.cards}) for d in decks)
-            self.events.put(("progress", "download", 0, total_unique, label))
-
-            image_map: dict[str, Path] = {}
-            done_dl_offset = 0
-
-            for deck in decks:
-                _offset = done_dl_offset
-
-                def _dl_progress(done, total, _off=_offset):
-                    self.events.put(("progress", "download", _off + done, total_unique, label))
-
-                partial = rb_download(
-                    deck,
-                    rb_raw_dir,
-                    cancel_event=self.cancel_event,
-                    progress_cb=_dl_progress,
-                )
-                image_map.update(partial)
-                done_dl_offset += len({c.variant_id for c in deck.cards})
-
-                if self.cancel_event.is_set():
-                    self.events.put(("cancelled", run_dir))
-                    return
-
-            backs = get_rb_backs()
-
-            all_fronts: list[Path] = []
-            all_backs: list[Path | None] = []
-            for idx, deck in enumerate(decks):
-                include_runes = (
-                    print_runes_flags[idx]
-                    if print_runes_flags and idx < len(print_runes_flags)
-                    else True
-                )
-                fronts, per_backs = rb_expand(deck, image_map, backs, include_runes=include_runes)
-                all_fronts.extend(fronts)
-                all_backs.extend(per_backs)
-
-            if not all_fronts:
-                raise ValueError("No se pudieron expandir las cartas.")
-
-            default_back = backs.get("maindeck") or next(iter(backs.values()))
-            all_back_paths = set(backs.values())
-            crop_map = {p: False for p in set(all_fronts) | all_back_paths}
-
-            base_name = "_".join(d.deck_id[:8] for d in decks)[:60]
-            self.events.put(("file", 1, 1, label))
-
-            _phase_first: dict[str, float] = {}
-            _phase_done: dict[str, float] = {}
-
-            def cb(stage, done, total):
-                now = time.time()
-                if stage not in _phase_first:
-                    _phase_first[stage] = now
-                if done == total and total > 0:
-                    _phase_done[stage] = now
-                self.events.put(("progress", stage, done, total, label))
-
-            pdfs = run_locals_only(
-                all_fronts,
-                default_back,
-                run_dir,
-                base_name,
-                wd,
-                cb,
-                cancel_event=self.cancel_event,
-                extra_backs=all_backs,
-                local_crop_map=crop_map,
-                fronts_only=fronts_only,
-            )
-
-            def _fmt_dur(sec: float) -> str:
-                return f"{int(sec) // 60}m {int(sec) % 60}s" if sec >= 60 else f"{sec:.0f}s"
-
-            timing_parts = []
-            for stage in ("download", "crop", "pdf"):
-                if stage in _phase_first and stage in _phase_done:
-                    dur = _phase_done[stage] - _phase_first[stage]
-                    lbl = {"download": "Descarga", "crop": "Recorte", "pdf": "PDF"}.get(
-                        stage, stage
-                    )
-                    timing_parts.append(f"{lbl}: {_fmt_dur(dur)}")
-            total_dur = time.time() - _run_start
-            timing_str = "  ".join(timing_parts)
-            if timing_str:
-                timing_str += f"  Total: {_fmt_dur(total_dur)}"
-
-            self.events.put(("done", pdfs, None, run_dir, timing_str))
-
-        except Exception as e:
-            self.events.put(("error", f"{e}\n\n{traceback.format_exc()}", run_dir))

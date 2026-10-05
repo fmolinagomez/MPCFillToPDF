@@ -25,18 +25,16 @@ class TestCardValidationLogic:
             "digital": False,
             "rarity": "mythic",
             "type_line": "Artifact",
-            "image_uris": {
-                "small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"
-            }
+            "image_uris": {"small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"},
         }
-        
+
         # Test ValidatorApp validation method directly without tkinter loop
         root = tk.Tk()
         try:
             app = ValidatorApp(root)
             with patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
                 res = app._validate_single_card(card)
-                
+
             assert res.status == "🟢 Válido"
             assert res.details == "Todo correcto"
             assert res.front_url == "https://cards.scryfall.io/small/front/0/0/abc.jpg"
@@ -54,18 +52,18 @@ class TestCardValidationLogic:
             "digital": False,
             "rarity": "mythic",
             "type_line": "Artifact",
-            "image_uris": {
-                "small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"
-            }
+            "image_uris": {"small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"},
         }
-        
+
         root = tk.Tk()
         try:
             app = ValidatorApp(root)
-            with patch("gui.moxfield_validator.fetch_card_by_name", return_value=("vma", "4")), \
-                 patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
+            with (
+                patch("gui.moxfield_validator.fetch_card_by_name", return_value=("vma", "4")),
+                patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data),
+            ):
                 res = app._validate_single_card(card)
-                
+
             assert res.status == "⚠️ Advertencia"
             assert "Edición/Nº faltante" in res.details
             assert res.set_code == "vma"
@@ -83,17 +81,15 @@ class TestCardValidationLogic:
             "digital": False,
             "rarity": "mythic",
             "type_line": "Artifact",
-            "image_uris": {
-                "small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"
-            }
+            "image_uris": {"small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"},
         }
-        
+
         root = tk.Tk()
         try:
             app = ValidatorApp(root)
             with patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
                 res = app._validate_single_card(card)
-                
+
             assert res.status == "⚠️ Advertencia"
             assert "Imagen de baja resolución" in res.details
         finally:
@@ -109,17 +105,15 @@ class TestCardValidationLogic:
             "digital": True,
             "rarity": "mythic",
             "type_line": "Artifact",
-            "image_uris": {
-                "small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"
-            }
+            "image_uris": {"small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"},
         }
-        
+
         root = tk.Tk()
         try:
             app = ValidatorApp(root)
             with patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
                 res = app._validate_single_card(card)
-                
+
             assert res.status == "⚠️ Advertencia"
             assert "Carta digital" in res.details
         finally:
@@ -137,16 +131,16 @@ class TestCardValidationLogic:
             "type_line": "Legendary Creature / Legendary Artifact",
             "card_faces": [
                 {"image_uris": {"small": "https://cards.scryfall.io/small/front/1/2/birgi.jpg"}},
-                {"image_uris": {"small": "https://cards.scryfall.io/small/back/1/2/horn.jpg"}}
-            ]
+                {"image_uris": {"small": "https://cards.scryfall.io/small/back/1/2/horn.jpg"}},
+            ],
         }
-        
+
         root = tk.Tk()
         try:
             app = ValidatorApp(root)
             with patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
                 res = app._validate_single_card(card)
-                
+
             assert res.status == "🟢 Válido"
             assert "Doble Cara (MDFC)" in res.details
             assert res.front_url == "https://cards.scryfall.io/small/front/1/2/birgi.jpg"
@@ -156,13 +150,15 @@ class TestCardValidationLogic:
 
     def test_validate_card_error_not_found(self):
         card = DeckCard("Black Lotus", "vma", "999", 1, "main")
-        
+
         root = tk.Tk()
         try:
             app = ValidatorApp(root)
-            with patch("gui.moxfield_validator._fetch_raw_card_data", side_effect=Exception("Not found")):
+            with patch(
+                "gui.moxfield_validator._fetch_raw_card_data", side_effect=Exception("Not found")
+            ):
                 res = app._validate_single_card(card)
-                
+
             assert res.status == "🔴 Error"
             assert "Error en Scryfall" in res.details
         finally:
@@ -179,17 +175,15 @@ class TestCardValidationLogic:
             "rarity": "common",
             "type_line": "Token Creature - Zombie",
             "layout": "token",
-            "image_uris": {
-                "small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"
-            }
+            "image_uris": {"small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"},
         }
-        
+
         root = tk.Tk()
         try:
             app = ValidatorApp(root)
             with patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
                 res = app._validate_single_card(card)
-                
+
             assert res.status == "🟢 Válido"
             assert "Todo correcto" in res.details
         finally:
@@ -206,17 +200,15 @@ class TestCardValidationLogic:
             "rarity": "common",
             "type_line": "Token Creature - Zombie",
             "layout": "normal",
-            "image_uris": {
-                "small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"
-            }
+            "image_uris": {"small": "https://cards.scryfall.io/small/front/0/0/abc.jpg"},
         }
-        
+
         root = tk.Tk()
         try:
             app = ValidatorApp(root)
             with patch("gui.moxfield_validator._fetch_raw_card_data", return_value=mock_data):
                 res = app._validate_single_card(card)
-                
+
             assert res.status == "⚠️ Advertencia"
             assert "Se omitirá al descargar" in res.details
         finally:

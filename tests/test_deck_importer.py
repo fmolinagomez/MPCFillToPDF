@@ -20,11 +20,21 @@ _MOXFIELD_FIXTURE = {
             "cards": {
                 "a1": {
                     "quantity": 4,
-                    "card": {"name": "Lightning Bolt", "set": "ltr", "cn": "152", "type_line": "Instant"},
+                    "card": {
+                        "name": "Lightning Bolt",
+                        "set": "ltr",
+                        "cn": "152",
+                        "type_line": "Instant",
+                    },
                 },
                 "a2": {
                     "quantity": 1,
-                    "card": {"name": "Forest", "set": "m21", "cn": "295", "type_line": "Basic Land — Forest"},
+                    "card": {
+                        "name": "Forest",
+                        "set": "m21",
+                        "cn": "295",
+                        "type_line": "Basic Land — Forest",
+                    },
                 },
             }
         },
@@ -32,7 +42,12 @@ _MOXFIELD_FIXTURE = {
             "cards": {
                 "c1": {
                     "quantity": 1,
-                    "card": {"name": "Urza, Lord High Artificer", "set": "mh1", "cn": "75", "type_line": "Legendary Creature — Human Artificer"},
+                    "card": {
+                        "name": "Urza, Lord High Artificer",
+                        "set": "mh1",
+                        "cn": "75",
+                        "type_line": "Legendary Creature — Human Artificer",
+                    },
                 }
             }
         },
@@ -41,14 +56,25 @@ _MOXFIELD_FIXTURE = {
             "cards": {
                 "b1": {
                     "quantity": 2,
-                    "card": {"name": "Naturalize", "set": "m21", "cn": "196", "type_line": "Instant"},
+                    "card": {
+                        "name": "Naturalize",
+                        "set": "m21",
+                        "cn": "196",
+                        "type_line": "Instant",
+                    },
                 }
             }
         },
     },
     "tokens": [
-        {"name": "Thopter", "set": "tmh1", "cn": "19", "quantity": 3, "type_line": "Token Creature — Thopter"}
-    ]
+        {
+            "name": "Thopter",
+            "set": "tmh1",
+            "cn": "19",
+            "quantity": 3,
+            "type_line": "Token Creature — Thopter",
+        }
+    ],
 }
 
 _MOXFIELD_FIXTURE_WITH_COMPANION = {
@@ -66,6 +92,15 @@ _MOXFIELD_FIXTURE_WITH_COMPANION = {
         },
         "sideboard": {"cards": {}},
     },
+}
+
+_MOXFIELD_FIXTURE_WITH_TOKENS = {
+    **_MOXFIELD_FIXTURE,
+    "tokens": [
+        {"name": "Treasure", "set": "tneo", "cn": "12"},
+        {"name": "Treasure", "set": "tneo", "cn": "12"},
+        {"card": {"name": "Goblin", "set": "tmom", "cn": "7"}},
+    ],
 }
 
 _ARCHIDEKT_FIXTURE = {
@@ -108,6 +143,12 @@ _ARCHIDEKT_FIXTURE = {
             },
         },
     ],
+}
+
+
+_ARCHIDEKT_FIXTURE_WITH_TOKENS = {
+    **_ARCHIDEKT_FIXTURE,
+    "tokens": [{"name": "Servo", "set": "tneo", "cn": "5"}],
 }
 
 
@@ -193,6 +234,15 @@ class TestMoxfieldFetch:
             with pytest.raises(DeckImportError, match="Moxfield"):
                 fetch_deck("https://www.moxfield.com/decks/BAD")
 
+    def test_extracts_each_distinct_token_once(self):
+        with patch(
+            "src.deck_importer.requests.get",
+            return_value=self._mock_resp(_MOXFIELD_FIXTURE_WITH_TOKENS),
+        ):
+            result = fetch_deck("https://www.moxfield.com/decks/ABC123")
+        tokens = [c for c in result.cards if c.zone == "token"]
+        assert [(c.name, c.quantity) for c in tokens] == [("Treasure", 1), ("Goblin", 1)]
+
 
 class TestArchidektFetch:
     def _mock_resp(self, data):
@@ -242,6 +292,56 @@ class TestArchidektFetch:
             result = fetch_deck("https://archidekt.com/decks/12345/my-deck")
         names = [c.name for c in result.cards]
         assert "Skipped" not in names
+
+
+class TestArchidektTokens:
+    def test_extracts_api_tokens(self):
+        resp = MagicMock()
+        resp.json.return_value = _ARCHIDEKT_FIXTURE_WITH_TOKENS
+        resp.raise_for_status.return_value = None
+        with patch("src.deck_importer.requests.get", return_value=resp):
+            result = fetch_deck("https://archidekt.com/decks/12345/my-deck")
+        assert [(c.name, c.zone) for c in result.cards if c.zone == "token"] == [("Servo", "token")]
+
+    def test_keeps_commander_when_archidekt_omits_printing_data(self):
+        data = {
+            "name": "Terra",
+            "cards": [
+                {
+                    "quantity": 1,
+                    "categories": ["Commander"],
+                    "card": {"oracleCard": {"name": "Terra, Herald of Hope"}},
+                }
+            ],
+        }
+        resp = MagicMock()
+        resp.json.return_value = data
+        resp.raise_for_status.return_value = None
+        with patch("src.deck_importer.requests.get", return_value=resp):
+            result = fetch_deck("https://archidekt.com/decks/15820256/terra")
+        assert [(c.name, c.zone) for c in result.cards] == [("Terra, Herald of Hope", "main")]
+
+    def test_does_not_treat_a_category_named_tokens_as_a_token_card(self):
+        data = {
+            "name": "Terra",
+            "cards": [
+                {
+                    "quantity": 1,
+                    "categories": ["Tokens"],
+                    "card": {
+                        "oracleCard": {"name": "Desecrated Tomb"},
+                        "edition": {"editioncode": "grn"},
+                        "collectorNumber": "230",
+                    },
+                }
+            ],
+        }
+        resp = MagicMock()
+        resp.json.return_value = data
+        resp.raise_for_status.return_value = None
+        with patch("src.deck_importer.requests.get", return_value=resp):
+            result = fetch_deck("https://archidekt.com/decks/15820256/terra")
+        assert [(c.name, c.zone) for c in result.cards] == [("Desecrated Tomb", "main")]
 
 
 class TestUrlDetection:
@@ -304,6 +404,8 @@ _TAPPEDOUT_TEXT = """\
 SB: 2 Pyroclasm
 SB: 1 Smash to Smithereens
 """
+
+_TAPPEDOUT_PAGE = "<div>Tokens | Clue, Dinosaur 3/1 R, Treasure</div>"
 
 _MANABOX_PROPS_JSON = (
     '{"deck":[0,{"name":[0,"Manabox Test"],'
@@ -399,6 +501,26 @@ class TestTappedoutFetch:
         with patch("src.deck_importer.requests.get", return_value=self._mock_resp("")):
             with pytest.raises(DeckImportError):
                 fetch_deck("https://tappedout.net/mtg-decks/empty-deck/")
+
+
+class TestTappedoutTokens:
+    def test_extracts_generated_tokens_from_deck_page(self):
+        def response(text):
+            result = MagicMock()
+            result.text = text
+            result.raise_for_status.return_value = None
+            return result
+
+        with patch(
+            "src.deck_importer.requests.get",
+            side_effect=[response(_TAPPEDOUT_TEXT), response(_TAPPEDOUT_PAGE)],
+        ):
+            result = fetch_deck("https://tappedout.net/mtg-decks/burn-deck/")
+        assert [c.name for c in result.cards if c.zone == "token"] == [
+            "Clue",
+            "Dinosaur",
+            "Treasure",
+        ]
 
 
 class TestManaboxFetch:

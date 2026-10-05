@@ -9,6 +9,8 @@ from src.app_settings import (
     DEFAULT_CUT_LINE_OVER_FRONTS,
     DEFAULT_CUT_LINE_STYLE,
     DEFAULT_CUT_LINE_WIDTH,
+    DEFAULT_MAX_PDF_SIZE_MB,
+    MAX_MAX_PDF_SIZE_MB,
     AppSettings,
     load_settings,
     save_settings,
@@ -21,6 +23,8 @@ class TestLoadSettings:
         assert s.output_dir is None
         assert s.cut_line_color == DEFAULT_CUT_LINE_COLOR
         assert s.cut_line_style == DEFAULT_CUT_LINE_STYLE
+        assert s.max_pdf_size_mb == DEFAULT_MAX_PDF_SIZE_MB
+        assert s.max_pdf_size_mb == 200
 
     def test_roundtrip(self, tmp_path):
         out = tmp_path / "out"
@@ -176,7 +180,9 @@ class TestLoadSettings:
     def test_scryfall_blur_threshold_invalid_falls_back(self, tmp_path):
         settings_file = tmp_path / "MPCFillToPDF" / "settings.json"
         settings_file.parent.mkdir(parents=True)
-        settings_file.write_text(json.dumps({"scryfall_blur_threshold": "invalid"}), encoding="utf-8")
+        settings_file.write_text(
+            json.dumps({"scryfall_blur_threshold": "invalid"}), encoding="utf-8"
+        )
         assert load_settings(tmp_path).scryfall_blur_threshold == pytest.approx(100.0)
 
     def test_scryfall_blur_threshold_clamped_to_min(self, tmp_path):
@@ -225,6 +231,21 @@ class TestLoadSettings:
     def test_scryfall_minimize_tokens_default_is_false(self, tmp_path):
         assert load_settings(tmp_path).scryfall_minimize_tokens is False
 
+    def test_max_pdf_size_roundtrip(self, tmp_path):
+        save_settings(AppSettings(max_pdf_size_mb=250), tmp_path)
+        assert load_settings(tmp_path).max_pdf_size_mb == 250
+
+    def test_invalid_max_pdf_size_falls_back_to_default(self, tmp_path):
+        settings_file = tmp_path / "MPCFillToPDF" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(json.dumps({"max_pdf_size_mb": "bad"}), encoding="utf-8")
+        assert load_settings(tmp_path).max_pdf_size_mb == DEFAULT_MAX_PDF_SIZE_MB
+
+    def test_max_pdf_size_is_clamped_to_two_and_a_half_gb(self, tmp_path):
+        settings_file = tmp_path / "MPCFillToPDF" / "settings.json"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(json.dumps({"max_pdf_size_mb": 10_000}), encoding="utf-8")
+        assert load_settings(tmp_path).max_pdf_size_mb == MAX_MAX_PDF_SIZE_MB
 
 
 class TestSaveSettings:

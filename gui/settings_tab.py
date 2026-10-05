@@ -14,16 +14,19 @@ from src.app_settings import (
     DEFAULT_CUT_LINE_OVER_FRONTS,
     DEFAULT_CUT_LINE_STYLE,
     DEFAULT_CUT_LINE_WIDTH,
+    DEFAULT_MAX_PDF_SIZE_MB,
     DEFAULT_SCRYFALL_BC_CHECK,
     DEFAULT_SCRYFALL_BLUR_THRESHOLD,
     DEFAULT_SCRYFALL_DECK_SEPARATORS,
     DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD,
     DEFAULT_SCRYFALL_DOWNLOAD_TOKENS,
-    DEFAULT_SCRYFALL_MINIMIZE_TOKENS,
     DEFAULT_SCRYFALL_FAIL_POLICY,
     DEFAULT_SCRYFALL_LANG,
+    DEFAULT_SCRYFALL_MINIMIZE_TOKENS,
     DEFAULT_SCRYFALL_QUALITY,
     DEFAULT_SCRYFALL_QUALITY_CHECK,
+    MAX_MAX_PDF_SIZE_MB,
+    MIN_MAX_PDF_SIZE_MB,
     save_settings,
 )
 
@@ -53,6 +56,30 @@ class SettingsTabMixin:
             side=tk.RIGHT, padx=(8, 0)
         )
 
+        ttk.Separator(outer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 12))
+
+        # ── Tamaño máximo de PDF ─────────────────────────────────────────────
+        ttk.Label(outer, text="Tamaño máximo de PDF", font=("Segoe UI", 10, "bold")).pack(
+            anchor=tk.W, pady=(0, 6)
+        )
+        ttk.Label(
+            outer,
+            text="(Seteado en 200Mb para que se puedan subir a la web, puedes editarlo para utilizar WeTransfer)",
+            foreground="#555",
+            wraplength=600,
+        ).pack(anchor=tk.W, pady=(0, 6))
+        pdf_size_row = ttk.Frame(outer)
+        pdf_size_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(pdf_size_row, text="Máximo por archivo (MB):").pack(side=tk.LEFT)
+        self._settings_max_pdf_size_var = tk.StringVar(value=str(self._settings.max_pdf_size_mb))
+        ttk.Entry(
+            pdf_size_row,
+            textvariable=self._settings_max_pdf_size_var,
+            width=6,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(
+            outer, text="Se crea un PDF nuevo al alcanzar este tamaño estimado.", foreground="#555"
+        ).pack(anchor=tk.W, pady=(0, 12))
         ttk.Separator(outer, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 12))
 
         # Contenedor de dos columnas
@@ -148,7 +175,9 @@ class SettingsTabMixin:
             self._over_cards_sub_frame.pack(anchor=tk.W, padx=(20, 0), pady=(4, 0))
 
         # ── Configuración avanzada de Scryfall (Columna Derecha) ─────────────
-        sf_frame = ttk.LabelFrame(right_col, text=" Configuración avanzada de Scryfall ", padding=10)
+        sf_frame = ttk.LabelFrame(
+            right_col, text=" Configuración avanzada de Scryfall ", padding=10
+        )
         sf_frame.pack(fill=tk.BOTH, expand=True)
 
         # Idioma preferido
@@ -180,9 +209,14 @@ class SettingsTabMixin:
 
         self._scryfall_quality_options = ["Large (Equilibrada)", "PNG (Alta calidad)"]
         self._scryfall_quality_map = {"Large (Equilibrada)": "large", "PNG (Alta calidad)": "png"}
-        self._scryfall_quality_inv_map = {"large": "Large (Equilibrada)", "png": "PNG (Alta calidad)"}
+        self._scryfall_quality_inv_map = {
+            "large": "Large (Equilibrada)",
+            "png": "PNG (Alta calidad)",
+        }
 
-        initial_quality_name = self._scryfall_quality_inv_map.get(self._settings.scryfall_quality, "Large (Equilibrada)")
+        initial_quality_name = self._scryfall_quality_inv_map.get(
+            self._settings.scryfall_quality, "Large (Equilibrada)"
+        )
         self._settings_sf_quality_var = tk.StringVar(value=initial_quality_name)
 
         self._sf_quality_combo = ttk.Combobox(
@@ -203,18 +237,20 @@ class SettingsTabMixin:
 
         self._scryfall_policy_options = [
             "Descargar en inglés",
-            "Buscar versión alternativa en idioma preferido y si no descargar en inglés"
+            "Buscar versión alternativa en idioma preferido y si no descargar en inglés",
         ]
         self._scryfall_policy_map = {
             "Descargar en inglés": "english",
-            "Buscar versión alternativa en idioma preferido y si no descargar en inglés": "alternative"
+            "Buscar versión alternativa en idioma preferido y si no descargar en inglés": "alternative",
         }
         self._scryfall_policy_inv_map = {
             "english": "Descargar en inglés",
-            "alternative": "Buscar versión alternativa en idioma preferido y si no descargar en inglés"
+            "alternative": "Buscar versión alternativa en idioma preferido y si no descargar en inglés",
         }
 
-        initial_policy_name = self._scryfall_policy_inv_map.get(self._settings.scryfall_fail_policy, "Descargar en inglés")
+        initial_policy_name = self._scryfall_policy_inv_map.get(
+            self._settings.scryfall_fail_policy, "Descargar en inglés"
+        )
         self._settings_sf_policy_var = tk.StringVar(value=initial_policy_name)
 
         self._sf_policy_combo = ttk.Combobox(
@@ -232,7 +268,9 @@ class SettingsTabMixin:
         # Control de calidad
         qc_row = ttk.Frame(sf_frame)
         qc_row.pack(fill=tk.X, pady=4)
-        self._settings_sf_quality_check_var = tk.BooleanVar(value=self._settings.scryfall_quality_check)
+        self._settings_sf_quality_check_var = tk.BooleanVar(
+            value=self._settings.scryfall_quality_check
+        )
         self._sf_quality_check_cb = ttk.Checkbutton(
             qc_row,
             text="Controlar calidad (evitar borrosas)",
@@ -244,7 +282,9 @@ class SettingsTabMixin:
         # Controlar brillo y contraste
         bc_row = ttk.Frame(sf_frame)
         bc_row.pack(fill=tk.X, pady=4)
-        self._settings_sf_bc_check_var = tk.BooleanVar(value=self._settings.scryfall_brightness_contrast_check)
+        self._settings_sf_bc_check_var = tk.BooleanVar(
+            value=self._settings.scryfall_brightness_contrast_check
+        )
         self._sf_bc_check_cb = ttk.Checkbutton(
             bc_row,
             text="Controlar brillo y contraste",
@@ -258,7 +298,9 @@ class SettingsTabMixin:
         blur_row.pack(fill=tk.X, pady=4)
         self._sf_blur_label = ttk.Label(blur_row, text="Umbral de enfoque (blur):")
         self._sf_blur_label.pack(side=tk.LEFT)
-        self._settings_sf_blur_threshold_var = tk.StringVar(value=f"{self._settings.scryfall_blur_threshold}")
+        self._settings_sf_blur_threshold_var = tk.StringVar(
+            value=f"{self._settings.scryfall_blur_threshold}"
+        )
         self._sf_blur_entry = ttk.Entry(
             blur_row,
             textvariable=self._settings_sf_blur_threshold_var,
@@ -273,7 +315,9 @@ class SettingsTabMixin:
         # Separadores de mazos
         sep_row = ttk.Frame(sf_frame)
         sep_row.pack(fill=tk.X, pady=4)
-        self._settings_sf_deck_separators_var = tk.BooleanVar(value=self._settings.scryfall_deck_separators)
+        self._settings_sf_deck_separators_var = tk.BooleanVar(
+            value=self._settings.scryfall_deck_separators
+        )
         self._sf_deck_separators_cb = ttk.Checkbutton(
             sep_row,
             text="Insertar separadores de mazos",
@@ -285,7 +329,9 @@ class SettingsTabMixin:
         # Minimizar fichas
         min_tok_row = ttk.Frame(sf_frame)
         min_tok_row.pack(fill=tk.X, pady=4)
-        self._settings_sf_minimize_tokens_var = tk.BooleanVar(value=self._settings.scryfall_minimize_tokens)
+        self._settings_sf_minimize_tokens_var = tk.BooleanVar(
+            value=self._settings.scryfall_minimize_tokens
+        )
         self._sf_minimize_tokens_cb = ttk.Checkbutton(
             min_tok_row,
             text="Minimizar fichas (unificar entre mazos)",
@@ -332,6 +378,17 @@ class SettingsTabMixin:
     def _on_settings_width_changed(self) -> None:
         """Called by Spinbox arrow buttons."""
         self._apply_width_from_var()
+
+    def _save_max_pdf_size_input(self) -> None:
+        try:
+            value = int(self._settings_max_pdf_size_var.get())
+        except ValueError:
+            self._settings_max_pdf_size_var.set(str(self._settings.max_pdf_size_mb))
+            return
+        value = max(MIN_MAX_PDF_SIZE_MB, min(MAX_MAX_PDF_SIZE_MB, value))
+        self._settings.max_pdf_size_mb = value
+        self._settings_max_pdf_size_var.set(str(value))
+        self._persist_settings()
 
     def _on_settings_width_trace(self, *_) -> None:
         """Called on every keystroke in the Spinbox entry."""
@@ -443,6 +500,7 @@ class SettingsTabMixin:
         self._settings.cut_line_over_cards = DEFAULT_CUT_LINE_OVER_CARDS
         self._settings.cut_line_over_fronts = DEFAULT_CUT_LINE_OVER_FRONTS
         self._settings.cut_line_over_backs = DEFAULT_CUT_LINE_OVER_BACKS
+        self._settings.max_pdf_size_mb = DEFAULT_MAX_PDF_SIZE_MB
 
         self._settings.scryfall_lang = DEFAULT_SCRYFALL_LANG
         self._settings.scryfall_quality = DEFAULT_SCRYFALL_QUALITY
@@ -464,11 +522,16 @@ class SettingsTabMixin:
         self._settings_width_var.set(f"{DEFAULT_CUT_LINE_WIDTH:.1f}")
         self._settings_over_fronts_var.set(DEFAULT_CUT_LINE_OVER_FRONTS)
         self._settings_over_backs_var.set(DEFAULT_CUT_LINE_OVER_BACKS)
+        self._settings_max_pdf_size_var.set(str(DEFAULT_MAX_PDF_SIZE_MB))
         self._over_cards_sub_frame.pack_forget()
 
         self._settings_sf_lang_var.set(self._scryfall_lang_inv_map.get(DEFAULT_SCRYFALL_LANG))
-        self._settings_sf_quality_var.set(self._scryfall_quality_inv_map.get(DEFAULT_SCRYFALL_QUALITY))
-        self._settings_sf_policy_var.set(self._scryfall_policy_inv_map.get(DEFAULT_SCRYFALL_FAIL_POLICY))
+        self._settings_sf_quality_var.set(
+            self._scryfall_quality_inv_map.get(DEFAULT_SCRYFALL_QUALITY)
+        )
+        self._settings_sf_policy_var.set(
+            self._scryfall_policy_inv_map.get(DEFAULT_SCRYFALL_FAIL_POLICY)
+        )
         self._update_sf_policy_state()
 
         self._settings_sf_quality_check_var.set(DEFAULT_SCRYFALL_QUALITY_CHECK)

@@ -9,9 +9,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-import requests
+import requests  # noqa: F401 - retained as the precheck test transport seam
 
 from src.constants import CARDS_PER_PAGE
+from src.http_client import get as http_get
 from src.parser import parse
 
 _THUMB_CHECK_URL = "https://lh4.googleusercontent.com/d/{}=d"
@@ -52,10 +53,11 @@ def check_drive_access(
 
     def _check(drive_id: str, name: str) -> tuple[str, str, bool]:
         try:
-            r = requests.get(
+            r = http_get(
                 _THUMB_CHECK_URL.format(drive_id),
                 timeout=_CHECK_TIMEOUT,
                 stream=True,
+                raise_for_status=False,
             )
             r.close()
             ok = r.status_code < 400
@@ -94,6 +96,7 @@ class PdfJob:
     base_name: str
     cards: int
     extra_locals: int = 0  # local fronts appended to this job (only on the last job)
+    fallback_base_name: str | None = None
 
     @property
     def is_merged(self) -> bool:
@@ -177,7 +180,14 @@ def plan(reports: list[XmlReport], local_count: int = 0) -> Plan:
             # several PDFs each with their own wasted slots.
             ordered = sorted(unaligned, key=lambda r: -r.cards)
             base = "_".join(r.path.stem for r in ordered) + "_union"
-            jobs.append(PdfJob([r.path for r in ordered], base, total_unaligned))
+            jobs.append(
+                PdfJob(
+                    [r.path for r in ordered],
+                    base,
+                    total_unaligned,
+                    fallback_base_name=f"fusion_{len(ordered)}_mazos",
+                )
+            )
             merged_xmls = ordered
 
     if local_count > 0 and jobs:

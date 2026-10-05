@@ -11,6 +11,9 @@ DEFAULT_CUT_LINE_WIDTH = 1.0
 DEFAULT_CUT_LINE_OVER_CARDS = False
 DEFAULT_CUT_LINE_OVER_FRONTS = True
 DEFAULT_CUT_LINE_OVER_BACKS = True
+DEFAULT_MAX_PDF_SIZE_MB = 200
+MIN_MAX_PDF_SIZE_MB = 1
+MAX_MAX_PDF_SIZE_MB = 2_500
 
 DEFAULT_SCRYFALL_LANG = "en"
 DEFAULT_SCRYFALL_QUALITY = "large"
@@ -33,6 +36,7 @@ class AppSettings:
     cut_line_over_cards: bool = DEFAULT_CUT_LINE_OVER_CARDS
     cut_line_over_fronts: bool = DEFAULT_CUT_LINE_OVER_FRONTS
     cut_line_over_backs: bool = DEFAULT_CUT_LINE_OVER_BACKS
+    max_pdf_size_mb: int = DEFAULT_MAX_PDF_SIZE_MB
     scryfall_lang: str = DEFAULT_SCRYFALL_LANG
     scryfall_quality: str = DEFAULT_SCRYFALL_QUALITY
     scryfall_fail_policy: str = DEFAULT_SCRYFALL_FAIL_POLICY
@@ -43,7 +47,6 @@ class AppSettings:
     scryfall_download_tokens: bool = DEFAULT_SCRYFALL_DOWNLOAD_TOKENS
     scryfall_deck_separators: bool = DEFAULT_SCRYFALL_DECK_SEPARATORS
     scryfall_minimize_tokens: bool = DEFAULT_SCRYFALL_MINIMIZE_TOKENS
-
 
 
 def _settings_path(base_dir: Path) -> Path:
@@ -77,6 +80,11 @@ def load_settings(base_dir: Path) -> AppSettings:
         over_cards = bool(data.get("cut_line_over_cards", DEFAULT_CUT_LINE_OVER_CARDS))
         over_fronts = bool(data.get("cut_line_over_fronts", DEFAULT_CUT_LINE_OVER_FRONTS))
         over_backs = bool(data.get("cut_line_over_backs", DEFAULT_CUT_LINE_OVER_BACKS))
+        try:
+            max_pdf_size_mb = int(data.get("max_pdf_size_mb", DEFAULT_MAX_PDF_SIZE_MB))
+            max_pdf_size_mb = max(MIN_MAX_PDF_SIZE_MB, min(MAX_MAX_PDF_SIZE_MB, max_pdf_size_mb))
+        except (TypeError, ValueError):
+            max_pdf_size_mb = DEFAULT_MAX_PDF_SIZE_MB
 
         sf_lang = str(data.get("scryfall_lang", DEFAULT_SCRYFALL_LANG)).strip().lower()
         if sf_lang not in ("en", "es"):
@@ -86,22 +94,36 @@ def load_settings(base_dir: Path) -> AppSettings:
         if sf_quality not in ("large", "png"):
             sf_quality = DEFAULT_SCRYFALL_QUALITY
 
-        sf_fail_policy = str(data.get("scryfall_fail_policy", DEFAULT_SCRYFALL_FAIL_POLICY)).strip().lower()
+        sf_fail_policy = (
+            str(data.get("scryfall_fail_policy", DEFAULT_SCRYFALL_FAIL_POLICY)).strip().lower()
+        )
         if sf_fail_policy not in ("english", "alternative"):
             sf_fail_policy = DEFAULT_SCRYFALL_FAIL_POLICY
 
         sf_quality_check = bool(data.get("scryfall_quality_check", DEFAULT_SCRYFALL_QUALITY_CHECK))
         try:
-            sf_blur_threshold = float(data.get("scryfall_blur_threshold", DEFAULT_SCRYFALL_BLUR_THRESHOLD))
+            sf_blur_threshold = float(
+                data.get("scryfall_blur_threshold", DEFAULT_SCRYFALL_BLUR_THRESHOLD)
+            )
             sf_blur_threshold = max(0.0, sf_blur_threshold)
         except (TypeError, ValueError):
             sf_blur_threshold = DEFAULT_SCRYFALL_BLUR_THRESHOLD
 
-        sf_bc_check = bool(data.get("scryfall_brightness_contrast_check", DEFAULT_SCRYFALL_BC_CHECK))
-        sf_download_sideboard = bool(data.get("scryfall_download_sideboard", DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD))
-        sf_download_tokens = bool(data.get("scryfall_download_tokens", DEFAULT_SCRYFALL_DOWNLOAD_TOKENS))
-        sf_deck_separators = bool(data.get("scryfall_deck_separators", DEFAULT_SCRYFALL_DECK_SEPARATORS))
-        sf_minimize_tokens = bool(data.get("scryfall_minimize_tokens", DEFAULT_SCRYFALL_MINIMIZE_TOKENS))
+        sf_bc_check = bool(
+            data.get("scryfall_brightness_contrast_check", DEFAULT_SCRYFALL_BC_CHECK)
+        )
+        sf_download_sideboard = bool(
+            data.get("scryfall_download_sideboard", DEFAULT_SCRYFALL_DOWNLOAD_SIDEBOARD)
+        )
+        sf_download_tokens = bool(
+            data.get("scryfall_download_tokens", DEFAULT_SCRYFALL_DOWNLOAD_TOKENS)
+        )
+        sf_deck_separators = bool(
+            data.get("scryfall_deck_separators", DEFAULT_SCRYFALL_DECK_SEPARATORS)
+        )
+        sf_minimize_tokens = bool(
+            data.get("scryfall_minimize_tokens", DEFAULT_SCRYFALL_MINIMIZE_TOKENS)
+        )
 
         return AppSettings(
             output_dir=output_dir,
@@ -111,6 +133,7 @@ def load_settings(base_dir: Path) -> AppSettings:
             cut_line_over_cards=over_cards,
             cut_line_over_fronts=over_fronts,
             cut_line_over_backs=over_backs,
+            max_pdf_size_mb=max_pdf_size_mb,
             scryfall_lang=sf_lang,
             scryfall_quality=sf_quality,
             scryfall_fail_policy=sf_fail_policy,
@@ -140,6 +163,7 @@ def save_settings(settings: AppSettings, base_dir: Path) -> None:
             "cut_line_over_cards": settings.cut_line_over_cards,
             "cut_line_over_fronts": settings.cut_line_over_fronts,
             "cut_line_over_backs": settings.cut_line_over_backs,
+            "max_pdf_size_mb": settings.max_pdf_size_mb,
             "scryfall_lang": settings.scryfall_lang,
             "scryfall_quality": settings.scryfall_quality,
             "scryfall_fail_policy": settings.scryfall_fail_policy,

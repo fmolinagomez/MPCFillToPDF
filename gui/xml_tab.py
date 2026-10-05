@@ -229,8 +229,10 @@ class XmlTabMixin:
         back_combo_values = ["default", *numbered]
 
         for i, deck in enumerate(self.state.mtg_url_decks):
-            frame = ttk.Frame(self.xml_inner)
-            frame.pack(fill=tk.X, pady=1, padx=2)
+            outer = ttk.Frame(self.xml_inner)
+            outer.pack(fill=tk.X, pady=1, padx=2)
+            frame = ttk.Frame(outer)
+            frame.pack(fill=tk.X)
             frame.columnconfigure(0, weight=3)
             frame.columnconfigure(2, weight=7)
 
@@ -250,57 +252,21 @@ class XmlTabMixin:
             token_count = sum(
                 c.quantity
                 for c in deck.cards
-                if c.zone == "token" and c.layout in ("token", "emblem", "double_faced_token")
+                if c.zone == "token"
+                and (not c.layout or c.layout in ("token", "emblem", "double_faced_token"))
             )
-            
+
             count_parts = [f"{main_count} cartas"]
             if side_count:
                 count_parts.append(f"+{side_count} side")
             if token_count:
-                count_parts.append(f"+{token_count} tokens")
+                count_parts.append(f"+{token_count} tokens/extras")
             count_text = " ".join(count_parts)
-            
             ttk.Label(right, text=count_text, foreground="#555", anchor="w").grid(
                 row=0, column=0, sticky="w", padx=(0, 6)
             )
 
             col = 1
-            if side_count:
-                side_var = tk.BooleanVar(value=deck.include_side)
-
-                def _toggle_side(idx=i, var=side_var):
-                    self.state.mtg_url_decks[idx].include_side = var.get()
-                    self._refresh_generate_state()
-
-                ttk.Checkbutton(
-                    right, text="Incluir sideboard", variable=side_var, command=_toggle_side
-                ).grid(row=0, column=col, padx=(0, 4))
-                col += 1
-
-            if token_count:
-                token_var = tk.BooleanVar(value=deck.include_tokens)
-
-                def _toggle_tokens(idx=i, var=token_var):
-                    self.state.mtg_url_decks[idx].include_tokens = var.get()
-                    self._refresh_generate_state()
-
-                ttk.Checkbutton(
-                    right, text="Incluir tokens", variable=token_var, command=_toggle_tokens
-                ).grid(row=0, column=col, padx=(0, 4))
-                col += 1
-
-            # Checkbox to include/exclude the deck separator card
-            sep_var = tk.BooleanVar(value=deck.include_separator)
-
-            def _toggle_sep(idx=i, var=sep_var):
-                self.state.mtg_url_decks[idx].include_separator = var.get()
-                self._refresh_generate_state()
-
-            ttk.Checkbutton(
-                right, text="Incluir separador", variable=sep_var, command=_toggle_sep
-            ).grid(row=0, column=col, padx=(0, 4))
-            col += 1
-
             if deck.back_path is not None and deck.back_path not in self.state.local_backs:
                 deck.back_path = None
 
@@ -332,9 +298,115 @@ class XmlTabMixin:
                 width=2,
                 command=lambda idx=i: self._remove_mtg_deck(idx),
             ).grid(row=0, column=col, padx=(0, 2))
+            col += 1
 
-            self._mtg_deck_rows.append({"frame": frame})
+            detail: ttk.Frame | None = None
+            expanded: tk.BooleanVar | None = None
+            extras_btn: ttk.Button | None = None
+            if True:
+                detail = ttk.Frame(outer)
+                controls = ttk.Frame(detail)
+                controls.pack(fill=tk.X, padx=(12, 4), pady=(0, 4))
+                expanded = tk.BooleanVar(value=False)
 
+                if side_count:
+                    side_var = tk.BooleanVar(value=deck.include_side)
+
+                    def _toggle_side(idx=i, var=side_var):
+                        self.state.mtg_url_decks[idx].include_side = var.get()
+                        self._refresh_generate_state()
+
+                    ttk.Checkbutton(
+                        controls, text="Incluir sideboard", variable=side_var, command=_toggle_side
+                    ).pack(side=tk.LEFT, padx=(12, 8), pady=(0, 4))
+
+                token_var = tk.BooleanVar(value=deck.include_tokens)
+
+                def _toggle_tokens(idx=i, var=token_var):
+                    self.state.mtg_url_decks[idx].include_tokens = var.get()
+                    self._refresh_generate_state()
+
+                ttk.Checkbutton(
+                    controls,
+                    text="Incluir tokens y extras",
+                    variable=token_var,
+                    command=_toggle_tokens,
+                ).pack(side=tk.LEFT, padx=(12, 8), pady=(0, 4))
+
+                sep_var = tk.BooleanVar(value=deck.include_separator)
+
+                def _toggle_sep(idx=i, var=sep_var):
+                    self.state.mtg_url_decks[idx].include_separator = var.get()
+                    self._refresh_generate_state()
+
+                ttk.Checkbutton(
+                    controls,
+                    text="Incluir separador",
+                    variable=sep_var,
+                    command=_toggle_sep,
+                ).pack(side=tk.LEFT, padx=(12, 8), pady=(0, 4))
+
+                selected_ids = deck.selected_card_ids
+                if selected_ids is None:
+                    selected_ids = {id(card) for card in deck.cards}
+                card_vars: dict[int, tk.BooleanVar] = {}
+
+                def _sync_cards(d=deck, vars=card_vars):
+                    d.selected_card_ids = {card_id for card_id, var in vars.items() if var.get()}
+                    self._refresh_generate_state()
+
+                for card in sorted(deck.cards, key=lambda c: c.name.casefold()):
+                    card_row = ttk.Frame(detail)
+                    card_row.pack(fill=tk.X, padx=(12, 4))
+                    card_vars[id(card)] = tk.BooleanVar(value=id(card) in selected_ids)
+                    ttk.Checkbutton(
+                        card_row, variable=card_vars[id(card)], command=_sync_cards
+                    ).pack(side=tk.LEFT)
+                    ttk.Label(card_row, text=f"x{card.quantity}", width=4, anchor="e").pack(
+                        side=tk.LEFT
+                    )
+                    ttk.Label(card_row, text=ellipsize(card.name, 28), width=29, anchor="w").pack(
+                        side=tk.LEFT
+                    )
+                    ttk.Label(card_row, text=card.zone, foreground="#888").pack(side=tk.LEFT)
+
+                extras_btn = ttk.Button(
+                    right,
+                    text="Cartas ▼",
+                    width=10,
+                    command=lambda idx=i: self._toggle_mtg_extras(idx),
+                )
+                extras_btn.grid(row=0, column=col)
+
+            self._mtg_deck_rows.append(
+                {
+                    "frame": outer,
+                    "detail": detail,
+                    "extras_btn": extras_btn,
+                    "expanded": expanded,
+                }
+            )
+
+        self.xml_inner.update_idletasks()
+        self.xml_canvas.configure(scrollregion=self.xml_canvas.bbox("all"))
+
+    def _toggle_mtg_extras(self, idx: int) -> None:
+        if idx >= len(self._mtg_deck_rows):
+            return
+        row = self._mtg_deck_rows[idx]
+        detail = row["detail"]
+        extras_btn = row["extras_btn"]
+        expanded = row["expanded"]
+        if detail is None or extras_btn is None or expanded is None:
+            return
+        if expanded.get():
+            detail.pack_forget()
+            extras_btn.configure(text="Cartas ▼")
+            expanded.set(False)
+        else:
+            detail.pack(fill=tk.X, padx=(12, 4), pady=(0, 4))
+            extras_btn.configure(text="Cartas ▲")
+            expanded.set(True)
         self.xml_inner.update_idletasks()
         self.xml_canvas.configure(scrollregion=self.xml_canvas.bbox("all"))
 
@@ -457,6 +529,7 @@ class XmlTabMixin:
                     result = fetch_deck(url)
                     # Query Scryfall layout for all tokens to make active_count and page estimation accurate!
                     from src.scryfall import fetch_card, fetch_card_by_name
+
                     for c in result.cards:
                         if c.zone == "token":
                             try:
@@ -469,9 +542,15 @@ class XmlTabMixin:
                                 sc_card = fetch_card(set_code, col_num)
                                 c.layout = getattr(sc_card, "layout", "")
                             except Exception as e:
-                                _log.warning("No se pudo obtener el layout de Scryfall para el token %s: %s", c.name, e)
+                                _log.warning(
+                                    "No se pudo obtener el layout de Scryfall para el token %s: %s",
+                                    c.name,
+                                    e,
+                                )
                                 c.layout = ""
-                    self.events.put(("mtg_url_loaded", url, result.cards, False, result.name, result.format))
+                    self.events.put(
+                        ("mtg_url_loaded", url, result.cards, False, result.name, result.format)
+                    )
                 except DeckImportError as exc:
                     self.events.put(("mtg_url_error", str(exc)))
                 except Exception as exc:

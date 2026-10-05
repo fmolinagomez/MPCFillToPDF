@@ -2,16 +2,20 @@
 
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from PIL import Image
+from reportlab.lib.units import mm
 
 from src.cancellation import Cancelled
 from src.pdf_generator import (
     CARDS_PER_PAGE,
+    YUGIOH_LAYOUT,
     _hex_to_rgb,
     _pair_drive_ids,
     _projected_pdf_bytes,
+    _trim_origin,
     generate,
 )
 
@@ -101,6 +105,23 @@ def test_generate_pdf_named_correctly(tmp_path):
     assert results[0].name == "mydeck.pdf"
 
 
+def test_generate_uses_numbered_fallback_name_for_an_overlong_output_path(tmp_path):
+    img = _img(tmp_path / "card.jpg")
+    slots, front, back = _slot_maps(1)
+
+    results = generate(
+        tmp_path / "out",
+        "a" * 252,
+        slots,
+        front,
+        back,
+        _id_to_path(front, back, img),
+        fallback_base_name="fusion_2_mazos",
+    )
+
+    assert results[0].name == "fusion_2_mazos_1.pdf"
+
+
 def test_generate_creates_output_dir(tmp_path):
     img = _img(tmp_path / "card.jpg")
     out_dir = tmp_path / "nested" / "output"
@@ -112,6 +133,26 @@ def test_generate_creates_output_dir(tmp_path):
 def test_generate_no_slots_returns_empty(tmp_path):
     results = generate(tmp_path / "out", "empty", [], {}, {}, {})
     assert results == []
+
+
+def test_yugioh_layout_uses_a_dedicated_smaller_three_by_three_grid(tmp_path):
+    img = _img(tmp_path / "card.jpg")
+    slots, front, back = _slot_maps(CARDS_PER_PAGE)
+    result = generate(
+        tmp_path / "out",
+        "yugioh",
+        slots,
+        front,
+        back,
+        _id_to_path(front, back, img),
+        layout=YUGIOH_LAYOUT,
+    )
+    first_x, first_y = _trim_origin(0, 0, YUGIOH_LAYOUT)
+    last_x, last_y = _trim_origin(2, 2, YUGIOH_LAYOUT)
+    assert result[0].exists()
+    assert YUGIOH_LAYOUT.card_w == 59 * mm
+    assert first_x < last_x
+    assert first_y > last_y
 
 
 # ─── generate — page counts ──────────────────────────────────────────────────
@@ -257,6 +298,37 @@ def test_generate_split_all_files_exist(tmp_path):
     for r in results:
         assert r.exists()
         assert r.stat().st_size > 0
+
+
+def test_generate_enforces_actual_size_limit_after_projection(tmp_path):
+    """A low image projection must not allow an oversized multi-pair PDF."""
+    img = _img(tmp_path / "card.jpg")
+    one_slots, one_front, one_back = _slot_maps(CARDS_PER_PAGE)
+    one_paths = _id_to_path(one_front, one_back, img)
+    one_pdf = generate(
+        tmp_path / "one",
+        "deck",
+        one_slots,
+        one_front,
+        one_back,
+        one_paths,
+        max_bytes=10**9,
+    )[0]
+
+    slots, front, back = _slot_maps(CARDS_PER_PAGE * 2)
+    paths = _id_to_path(front, back, img)
+    unbounded = generate(
+        tmp_path / "unbounded", "deck", slots, front, back, paths, max_bytes=10**9
+    )[0]
+    max_bytes = (one_pdf.stat().st_size + unbounded.stat().st_size) // 2
+
+    with patch("src.pdf_generator._projected_pdf_bytes", return_value=0):
+        outputs = generate(
+            tmp_path / "limited", "deck", slots, front, back, paths, max_bytes=max_bytes
+        )
+
+    assert len(outputs) == 2
+    assert all(output.stat().st_size <= max_bytes for output in outputs)
 
 
 # ─── _hex_to_rgb ─────────────────────────────────────────────────────────────

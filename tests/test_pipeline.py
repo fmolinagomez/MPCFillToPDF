@@ -9,11 +9,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from PIL import Image
 
 from src.cancellation import Cancelled
 from src.deck_importer import DeckCard, FetchedDeck
 from src.downloader import DownloadPermissionError
 from src.parser import parse
+from src.pdf_generator import YUGIOH_LAYOUT
 from src.pipeline import (
     _build_crop_tasks,
     _build_slot_maps,
@@ -36,6 +38,26 @@ W, H = 200, 280  # image dimensions chosen to survive MPC bleed crop
 
 def _img(path: Path, color=(180, 80, 40)) -> Path:
     return make_rgb_image(path, W, H, color)
+
+
+def test_run_locals_only_yugioh_layout_uses_yugioh_sized_bleed(tmp_path):
+    front = make_rgb_image(tmp_path / "front.jpg", 590, 860)
+    back = make_rgb_image(tmp_path / "back.jpg", 590, 860)
+
+    outputs = run_locals_only(
+        [front],
+        back,
+        tmp_path / "out",
+        "yugioh",
+        tmp_path / "work",
+        local_crop_map={front: False, back: False},
+        layout=YUGIOH_LAYOUT,
+    )
+
+    assert outputs[0].exists()
+    bled_images = list((tmp_path / "work" / "bled").glob("*.jpg"))
+    assert bled_images
+    assert all(Image.open(path).size == (610, 880) for path in bled_images)
 
 
 def _one_card_xml(tmp_path: Path, name: str = "deck") -> Path:
@@ -175,6 +197,26 @@ def test_run_plan_produces_one_pdf_per_job(tmp_path):
     assert len(results) == 2
 
 
+def test_run_plan_uses_short_numbered_name_for_overlong_merge_name(tmp_path):
+    xml1 = make_xml(
+        tmp_path / "a.xml",
+        fronts=[{"id": "FA", "name": "A", "slots": "0"}],
+        cardback_id="CBA",
+    )
+    xml2 = make_xml(
+        tmp_path / "b.xml",
+        fronts=[{"id": "FB", "name": "B", "slots": "0"}],
+        cardback_id="CBB",
+    )
+    p = make_plan(analyze([xml1, xml2]))
+    p.jobs[0].base_name = "a" * 252
+
+    with patch("src.pipeline.download_all", side_effect=_fake_download_all(tmp_path / "raw")):
+        results = run_plan(p.jobs, tmp_path / "out", tmp_path / "work")
+
+    assert results[0].name == "fusion_2_mazos_1.pdf"
+
+
 def test_run_plan_fronts_only(tmp_path):
     xml = _one_card_xml(tmp_path)
     reports = analyze([xml])
@@ -260,6 +302,23 @@ def test_run_locals_only_produces_pdf(tmp_path):
     assert len(results) == 1
     assert results[0].exists()
     assert results[0].stat().st_size > 0
+
+
+def test_run_locals_only_passes_custom_pdf_size_to_generator(tmp_path):
+    front = _img(tmp_path / "front.jpg")
+    cardback = _img(tmp_path / "back.jpg", color=(40, 80, 180))
+
+    with patch("src.pipeline.generate", return_value=[]) as generate_mock:
+        run_locals_only(
+            extra_fronts=[front],
+            local_cardback=cardback,
+            output_dir=tmp_path / "out",
+            base_name="locals",
+            work_dir=tmp_path / "work",
+            max_pdf_bytes=250_000_000,
+        )
+
+    assert generate_mock.call_args.kwargs["max_bytes"] == 250_000_000
 
 
 def test_run_locals_only_fronts_only(tmp_path):
@@ -520,7 +579,7 @@ class TestBuildCropTasks:
         did, _, bled_p, crop = tasks[0]
         assert did == "ABC123"
         assert crop is True
-        assert bled_p.name == "ABC123.jpg"
+        assert bled_p.name.startswith("ABC123_v2_crop_")
 
     def test_local_id_with_crop_true(self, tmp_path):
         local = tmp_path / "local.jpg"
@@ -529,7 +588,7 @@ class TestBuildCropTasks:
         tasks = _build_crop_tasks({lid: local}, tmp_path / "bled", {lid: local}, {local: True})
         _, _, bled_p, crop = tasks[0]
         assert crop is True
-        assert "_nocrop" not in bled_p.name
+        assert "_crop_" in bled_p.name
 
     def test_local_id_with_crop_false(self, tmp_path):
         local = tmp_path / "local.jpg"
@@ -538,7 +597,7 @@ class TestBuildCropTasks:
         tasks = _build_crop_tasks({lid: local}, tmp_path / "bled", {lid: local}, {local: False})
         _, _, bled_p, crop = tasks[0]
         assert crop is False
-        assert "_nocrop" in bled_p.name
+        assert "_nocrop_" in bled_p.name
 
     def test_local_id_missing_from_crop_map_defaults_to_no_crop(self, tmp_path):
         local = tmp_path / "local.jpg"
@@ -547,7 +606,7 @@ class TestBuildCropTasks:
         tasks = _build_crop_tasks({lid: local}, tmp_path / "bled", {lid: local}, {})
         _, _, bled_p, crop = tasks[0]
         assert crop is False
-        assert "_nocrop" in bled_p.name
+        assert "_nocrop_" in bled_p.name
 
     def test_empty_input_returns_empty(self):
         tasks = _build_crop_tasks({}, Path("bled"), {}, {})

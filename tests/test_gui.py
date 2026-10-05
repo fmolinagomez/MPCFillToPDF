@@ -8,6 +8,7 @@ import tkinter as tk
 
 import pytest
 
+from src.parser import parse
 from tests.conftest import make_rgb_image, make_xml
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,57 @@ def app(tk_root):
 # ---------------------------------------------------------------------------
 # _build_crop_map
 # ---------------------------------------------------------------------------
+
+
+class TestMtgUrlDeckZones:
+    def test_tokens_require_their_own_selection(self):
+        from gui.main import MtgUrlDeck
+        from src.deck_importer import DeckCard
+
+        deck = MtgUrlDeck(
+            url="https://moxfield.com/decks/example",
+            cards=[
+                DeckCard("Main", "m21", "1", 1, "main"),
+                DeckCard("Side", "m21", "2", 1, "side"),
+                DeckCard("Token", "tm21", "3", 1, "token"),
+            ],
+            include_side=True,
+        )
+
+        assert deck.active_count == 2
+        deck.include_tokens = True
+        assert deck.active_count == 3
+
+
+class TestMtgExtras:
+    def test_all_magic_decks_show_the_card_selector(self, app):
+        from gui.main import MtgUrlDeck
+        from src.deck_importer import DeckCard
+
+        app.state.mtg_url_decks.extend(
+            [
+                MtgUrlDeck(
+                    "https://moxfield.com/decks/no-tokens",
+                    [DeckCard("Main", "m21", "1", 1, "main")],
+                ),
+                MtgUrlDeck(
+                    "https://moxfield.com/decks/tokens",
+                    [
+                        DeckCard("Main", "m21", "1", 1, "main"),
+                        DeckCard("Side", "m21", "2", 1, "side"),
+                        DeckCard("Token", "tm21", "3", 1, "token"),
+                    ],
+                ),
+            ]
+        )
+        app._refresh_xml_rows()
+
+        assert app._mtg_deck_rows[0]["extras_btn"] is not None
+        assert app._mtg_deck_rows[1]["extras_btn"].cget("text") == "Cartas ▼"
+
+        app._toggle_mtg_extras(1)
+
+        assert app._mtg_deck_rows[1]["extras_btn"].cget("text") == "Cartas ▲"
 
 
 class TestBuildCropMap:
@@ -169,6 +221,31 @@ class TestGenerateState:
         assert "disabled" in str(app.soriano_btn.state())
 
 
+class TestXmlPlanPreview:
+    def test_plan_includes_cards_appended_to_last_xml_pdf(self, app, tmp_path):
+        first = make_xml(
+            tmp_path / "first.xml",
+            fronts=[{"id": f"F{i}", "name": f"First {i}", "slots": str(i)} for i in range(5)],
+        )
+        second = make_xml(
+            tmp_path / "second.xml",
+            fronts=[{"id": f"S{i}", "name": f"Second {i}", "slots": str(i)} for i in range(5)],
+        )
+        app.state.xml_paths.extend([first, second])
+        app._xml_orders[first] = parse(first)
+        app._xml_orders[second] = parse(second)
+        app.state.local_fronts.extend([tmp_path / f"local{i}.jpg" for i in range(8)])
+
+        current_plan = app._loaded_xml_plan()
+
+        assert current_plan is not None
+        assert len(current_plan.jobs) == 1
+        assert current_plan.jobs[0].is_merged
+        assert current_plan.jobs[0].extra_locals == 8
+        assert current_plan.jobs[0].total_cards == 18
+        assert not current_plan.has_blanks
+
+
 # ---------------------------------------------------------------------------
 # Batch crop toggle (_on_front_crop_all / _on_back_crop_all)
 # ---------------------------------------------------------------------------
@@ -242,6 +319,92 @@ class TestCropChange:
         var = tk.BooleanVar(value=True)
         app._on_front_crop_change(99, var)  # no IndexError
 
+    def test_crop_change_applies_to_selected_fronts(self, app, tmp_path):
+        for i in range(3):
+            app.state.local_fronts.append(make_rgb_image(tmp_path / f"f{i}.jpg"))
+            app.state.front_back_paths.append(None)
+            app.state.local_front_crop.append(False)
+        app._front_selected_indices = {0, 2}
+        app._on_front_crop_change(0, tk.BooleanVar(value=True))
+        assert app.state.local_front_crop == [True, False, True]
+
+
+class TestFrontMultiselection:
+    def test_clicking_any_row_label_selects_the_front(self, app, tmp_path):
+        app.state.local_fronts.append(make_rgb_image(tmp_path / "front.jpg"))
+        app.state.front_back_paths.append(None)
+        app.state.local_front_crop.append(False)
+        app._front_multiselect_var.set(True)
+        app._refresh_front_rows()
+
+        app._front_rows[0]["frame"].winfo_children()[2].event_generate("<ButtonPress-1>")
+
+        assert app._front_selected_indices == {0}
+
+    def test_back_change_applies_to_selected_fronts(self, app, tmp_path):
+        back = make_rgb_image(tmp_path / "back.jpg")
+        app.state.local_backs.append(back)
+        app.state.local_back_crop.append(False)
+        for i in range(3):
+            app.state.local_fronts.append(make_rgb_image(tmp_path / f"f{i}.jpg"))
+            app.state.front_back_paths.append(None)
+            app.state.local_front_crop.append(False)
+        app._front_selected_indices = {0, 2}
+        app._on_front_back_change(0, tk.StringVar(value="1"))
+        assert app.state.front_back_paths == [back, None, back]
+
+    def test_selection_start_adds_to_previous_selection(self, app):
+        app._front_multiselect_var.set(True)
+        app._front_selected_indices = {0, 1}
+        assert app._on_front_selection_start(2) == "break"
+        assert app._front_selected_indices == {0, 1, 2}
+
+    def test_selection_drag_adds_front(self, app):
+        app._front_multiselect_var.set(True)
+        app._front_selected_indices = {0}
+        assert app._on_front_selection_drag(2) == "break"
+        assert app._front_selected_indices == {0, 2}
+
+
+# ---------------------------------------------------------------------------
+# Duplicate local images
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateLocalImages:
+    def test_drop_duplicate_fronts_creates_parallel_entries(self, app, tmp_path):
+        front = make_rgb_image(tmp_path / "front.jpg")
+        app._decode_drop = lambda _files: [front, front]
+
+        app._on_drop_fronts("ignored")
+
+        assert app.state.local_fronts == [front, front]
+        assert app.state.front_back_paths == [None, None]
+        assert app.state.local_front_crop == [False, False]
+
+    def test_drop_duplicate_backs_creates_parallel_entries(self, app, tmp_path):
+        back = make_rgb_image(tmp_path / "back.jpg")
+        app._decode_drop = lambda _files: [back, back]
+
+        app._on_drop_backs("ignored")
+
+        assert app.state.local_backs == [back, back]
+        assert app.state.local_back_crop == [False, False]
+
+    def test_removing_one_duplicate_back_keeps_front_assignments(self, app, tmp_path):
+        back = make_rgb_image(tmp_path / "back.jpg")
+        front = make_rgb_image(tmp_path / "front.jpg")
+        app.state.local_backs = [back, back]
+        app.state.local_back_crop = [False, False]
+        app.state.local_fronts = [front]
+        app.state.front_back_paths = [back]
+        app.state.local_front_crop = [False]
+
+        app._remove_back(0)
+
+        assert app.state.local_backs == [back]
+        assert app.state.front_back_paths == [back]
+
 
 # ---------------------------------------------------------------------------
 # _on_mtg_back_change
@@ -301,7 +464,7 @@ class TestMtgUrlDeckActiveCount:
     def test_active_count_filters_invalid_token_layouts(self):
         from gui.main import MtgUrlDeck
         from src.deck_importer import DeckCard
-        
+
         cards = [
             DeckCard("Valid Token", "unf", "1", 1, "token", layout="token"),
             DeckCard("Invalid Token", "unf", "2", 2, "token", layout="normal"),
@@ -319,7 +482,7 @@ class TestMtgUrlDeckActiveCount:
     def test_active_count_deduplicates_tokens(self):
         from gui.main import MtgUrlDeck
         from src.deck_importer import DeckCard
-        
+
         cards = [
             # Two copies of the exact same token version
             DeckCard("Zombie Token", "unf", "1", 2, "token", layout="token"),
@@ -337,44 +500,43 @@ class TestMtgUrlDeckActiveCount:
 class TestGuiHandleDoneWithWarnings:
     def test_done_event_updates_status_var_with_skipped_tokens(self, app):
         from pathlib import Path
-        
+
         event = ("done", [Path("dummy.pdf")], None, Path("out_dir"), "PDF: 1s", 3)
         app._handle(event)
-        
+
         assert "Aviso: 3 token(s) omitidos por layout no válido" in app.status_var.get()
         assert "Listo" in app.status_var.get()
 
     def test_done_event_no_skipped_tokens(self, app):
         from pathlib import Path
-        
+
         event = ("done", [Path("dummy.pdf")], None, Path("out_dir"), "PDF: 1s", 0)
         app._handle(event)
-        
+
         assert "omitidos" not in app.status_var.get()
         assert "Listo" in app.status_var.get()
 
 
 class TestScrollableRowsHorizontalScrollbar:
     def test_scrollable_rows_has_horizontal_scrollbar(self, app):
-        from tkinter import ttk
         parent = tk.Frame(app.root)
         parent.pack()
         canvas, inner, window_id = app._build_scrollable_rows(parent)
-        
+
         # Create a very wide label inside inner
         dummy = tk.Label(inner, text="A very long label" * 20)
         dummy.pack()
-        
+
         app.root.update_idletasks()
-        
+
         # Make canvas width small to force overflow
         canvas.configure(width=100)
         app.root.update_idletasks()
-        
+
         # Trigger configure event
         canvas.event_generate("<Configure>", width=100, height=200)
         app.root.update_idletasks()
-        
+
         holder = canvas.master
         hsb = None
         for child in holder.winfo_children():
@@ -384,31 +546,32 @@ class TestScrollableRowsHorizontalScrollbar:
                 if orient == "horizontal":
                     hsb = child
                     break
-                
+
         assert hsb is not None
         # Should be gridded because of overflow
         assert bool(hsb.grid_info()) is True
-        
+
         # Now remove the wide label, make the content narrow, and check if it disappears
         dummy.destroy()
         dummy2 = tk.Label(inner, text="Short")
         dummy2.pack()
         app.root.update_idletasks()
-        
+
         # Make canvas very wide to ensure no overflow
         canvas.configure(width=1000)
         app.root.update_idletasks()
         canvas.event_generate("<Configure>", width=1000, height=200)
         app.root.update_idletasks()
-        
+
         # Should no longer be gridded
         assert bool(hsb.grid_info()) is False
 
 
 class TestSeparatorBackResolution:
     def test_separator_back_always_uses_deck_back_or_default(self, app, tmp_path):
-        from unittest.mock import patch, MagicMock
         from pathlib import Path
+        from unittest.mock import patch
+
         from gui.main import MtgUrlDeck
         from src.deck_importer import DeckCard
 
@@ -417,41 +580,39 @@ class TestSeparatorBackResolution:
         commander = DeckCard("Jace", "m21", "1", 1, "main", is_commander=True)
         # We need a normal card
         card1 = DeckCard("Opt", "m21", "2", 4, "main")
-        
+
         # Custom deck back path
         custom_back = tmp_path / "custom_back.jpg"
         custom_back.touch()
-        
+
         deck = MtgUrlDeck(
             url="https://moxfield.com/decks/abc",
             name="My Deck",
             cards=[commander, card1],
             include_separator=True,
             back_path=custom_back,
-            format="commander"
+            format="commander",
         )
-        
+
         app.state.mtg_url_decks = [deck]
         app.state.local_backs = [custom_back]
-        
+
         # Mock scryfall_download to return paths for download
         # (card, front_path, back_path)
         front_jace = tmp_path / "jace_front.jpg"
         front_jace.touch()
         back_jace = tmp_path / "jace_back.jpg"
         back_jace.touch()
-        
+
         front_opt = tmp_path / "opt_front.jpg"
         front_opt.touch()
-        
+
         # Commander has a specific back (back_jace), e.g., if it's double-faced
-        dl_results = [
-            (commander, front_jace, back_jace),
-            (card1, front_opt, None)
-        ]
-        
+        dl_results = [(commander, front_jace, back_jace), (card1, front_opt, None)]
+
         # Keep track of arguments passed to run_locals_only
         captured_args = {}
+
         def mock_run_locals_only(*args, **kwargs):
             captured_args["extra_fronts"] = args[0]
             captured_args["default_back"] = args[1]
@@ -461,40 +622,42 @@ class TestSeparatorBackResolution:
         # Mock dependencies
         with (
             patch("gui.main.work_dir", return_value=tmp_path),
-            patch("gui.main.scryfall_download", return_value=dl_results) as mock_dl,
+            patch("gui.main.scryfall_download", return_value=dl_results),
             patch.object(app, "_create_separator_image") as mock_create_sep,
-            patch("gui.main.run_locals_only", side_effect=mock_run_locals_only) as mock_run,
-            patch("gui.main.resources_dir", return_value=tmp_path)
+            patch("gui.main.run_locals_only", side_effect=mock_run_locals_only),
+            patch("gui.main.resources_dir", return_value=tmp_path),
         ):
             # Create a mock mtg default back file
             mtg_default_back = tmp_path / "backs" / "mtg" / "back.jpg"
             mtg_default_back.parent.mkdir(parents=True, exist_ok=True)
             mtg_default_back.touch()
-            
+
             # Mock _create_separator_image to create the output file so it exists
             def side_effect_create_sep(name, fmt, cards, path):
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
                 Path(path).touch()
+
             mock_create_sep.side_effect = side_effect_create_sep
 
             # Call _work
             app._work(None, None, False, "#000000", "ticks", 0.5, False, False, False)
-            
+
         extra_fronts = captured_args.get("extra_fronts")
         extra_backs = captured_args.get("extra_backs")
-        
+
         assert extra_fronts is not None
         assert extra_backs is not None
-        
+
         # separator_0.jpg should be the first front
         assert "separator_0.jpg" in extra_fronts[0].name
-        
+
         # The separator's back must be the deck's custom back
         assert extra_backs[0] == custom_back
 
     def test_separator_back_falls_back_to_default_mtg_back(self, app, tmp_path):
-        from unittest.mock import patch, MagicMock
         from pathlib import Path
+        from unittest.mock import patch
+
         from gui.main import MtgUrlDeck
         from src.deck_importer import DeckCard
 
@@ -503,35 +666,33 @@ class TestSeparatorBackResolution:
         commander = DeckCard("Jace", "m21", "1", 1, "main", is_commander=True)
         # We need a normal card
         card1 = DeckCard("Opt", "m21", "2", 4, "main")
-        
+
         deck = MtgUrlDeck(
             url="https://moxfield.com/decks/abc",
             name="My Deck",
             cards=[commander, card1],
             include_separator=True,
-            back_path=None, # No custom back
-            format="commander"
+            back_path=None,  # No custom back
+            format="commander",
         )
-        
+
         app.state.mtg_url_decks = [deck]
         # No local backs assigned
         app.state.local_backs = []
-        
+
         # Mock scryfall_download to return paths for download
         front_jace = tmp_path / "jace_front.jpg"
         front_jace.touch()
         back_jace = tmp_path / "jace_back.jpg"
         back_jace.touch()
-        
+
         front_opt = tmp_path / "opt_front.jpg"
         front_opt.touch()
-        
-        dl_results = [
-            (commander, front_jace, back_jace),
-            (card1, front_opt, None)
-        ]
-        
+
+        dl_results = [(commander, front_jace, back_jace), (card1, front_opt, None)]
+
         captured_args = {}
+
         def mock_run_locals_only(*args, **kwargs):
             captured_args["extra_fronts"] = args[0]
             captured_args["default_back"] = args[1]
@@ -541,38 +702,41 @@ class TestSeparatorBackResolution:
         # Mock dependencies
         with (
             patch("gui.main.work_dir", return_value=tmp_path),
-            patch("gui.main.scryfall_download", return_value=dl_results) as mock_dl,
+            patch("gui.main.scryfall_download", return_value=dl_results),
             patch.object(app, "_create_separator_image") as mock_create_sep,
-            patch("gui.main.run_locals_only", side_effect=mock_run_locals_only) as mock_run,
-            patch("gui.main.resources_dir", return_value=tmp_path)
+            patch("gui.main.run_locals_only", side_effect=mock_run_locals_only),
+            patch("gui.main.resources_dir", return_value=tmp_path),
         ):
             # Create a mock mtg default back file
             mtg_default_back = tmp_path / "backs" / "mtg" / "back.jpg"
             mtg_default_back.parent.mkdir(parents=True, exist_ok=True)
             mtg_default_back.touch()
-            
+
             def side_effect_create_sep(name, fmt, cards, path):
                 Path(path).parent.mkdir(parents=True, exist_ok=True)
                 Path(path).touch()
+
             mock_create_sep.side_effect = side_effect_create_sep
 
             # Call _work
             app._work(None, None, False, "#000000", "ticks", 0.5, False, False, False)
-            
+
         extra_fronts = captured_args.get("extra_fronts")
         extra_backs = captured_args.get("extra_backs")
-        
+
         assert extra_fronts is not None
         assert extra_backs is not None
-        
+
         # separator_0.jpg should be the first front
         assert "separator_0.jpg" in extra_fronts[0].name
-        
+
         # The separator's back must be the default MTG back, NOT back_jace!
         assert extra_backs[0] == mtg_default_back
 
     def test_base_name_uses_sanitized_deck_name_when_single_deck(self, app, tmp_path):
+        from pathlib import Path
         from unittest.mock import patch
+
         from gui.main import MtgUrlDeck
         from src.deck_importer import DeckCard
 
@@ -583,19 +747,20 @@ class TestSeparatorBackResolution:
             cards=[commander],
             include_separator=False,
             back_path=None,
-            format="commander"
+            format="commander",
         )
-        
+
         app.state.mtg_url_decks = [deck]
-        
+
         front_jace = tmp_path / "jace_front.jpg"
         front_jace.touch()
         back_jace = tmp_path / "jace_back.jpg"
         back_jace.touch()
-        
+
         dl_results = [(commander, front_jace, back_jace)]
-        
+
         captured_base_name = []
+
         def mock_run_locals_only(*args, **kwargs):
             captured_base_name.append(args[3])
             return [Path("output.pdf")]
@@ -604,18 +769,33 @@ class TestSeparatorBackResolution:
             patch("gui.main.work_dir", return_value=tmp_path),
             patch("gui.main.scryfall_download", return_value=dl_results),
             patch("gui.main.run_locals_only", side_effect=mock_run_locals_only),
-            patch("gui.main.resources_dir", return_value=tmp_path)
+            patch("gui.main.resources_dir", return_value=tmp_path),
         ):
             mtg_default_back = tmp_path / "backs" / "mtg" / "back.jpg"
             mtg_default_back.parent.mkdir(parents=True, exist_ok=True)
             mtg_default_back.touch()
-            
+
             app._work(None, None, False, "#000000", "ticks", 0.5, False, False, False)
-            
+
         assert len(captured_base_name) == 1
         assert captured_base_name[0] == "My Extremely Long Moxfield Deck_ _Nice_"
 
 
+class TestYugiohRows:
+    def test_side_deck_count_is_visible_and_selectable(self, app):
+        from src.ygo_scraper import YGOCard, YGODeck
 
+        app._ygo_decks.append(
+            YGODeck(
+                "Prueba",
+                "id",
+                [YGOCard(1, "Main", 2, "main"), YGOCard(2, "Side", 15, "side")],
+            )
+        )
 
+        app._ygo_refresh_rows()
 
+        row = app._ygo_deck_rows[0]
+        controls = row["outer"].winfo_children()[0].winfo_children()
+        assert "Incluir Side (15)" in [control.cget("text") for control in controls]
+        assert row["include_side_var"].get() is False
